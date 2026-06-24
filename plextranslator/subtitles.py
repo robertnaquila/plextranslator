@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 
 @dataclass
@@ -111,6 +111,22 @@ def parse_srt(text: str) -> List[Cue]:
         body = "\n".join(lines[1:]).strip()
         cues.append(Cue(start=start, end=end, text=body))
     return cues
+
+
+def cue_at(cues: List[Cue], t: float) -> Optional[Cue]:
+    """Return the cue active at time ``t`` seconds, or None.
+
+    ``cues`` is assumed sorted by start time. If cues overlap, the last one whose
+    span contains ``t`` wins. Used by the web overlay to pick the line to show for
+    the current playhead.
+    """
+    match: Optional[Cue] = None
+    for cue in cues:
+        if cue.start <= t < cue.end:
+            match = cue
+        elif cue.start > t:
+            break
+    return match
 
 
 def merge_cues(existing: List[Cue], new: List[Cue]) -> List[Cue]:

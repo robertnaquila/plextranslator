@@ -14,6 +14,7 @@ It works two ways:
 | Mode | What it does | When to use it |
 |------|--------------|----------------|
 | **`live`** | Follows whatever Korean/Japanese title you're currently playing, generating English subtitles in chunks that race *ahead* of the playhead and upload to Plex as you watch. | "Press play and start understanding it now." |
+| **`web`** | Serves a **browser subtitle overlay** synced to your Plex playback. Open it in a tab (Plex Web users especially), and live English subtitles appear in time with the video — no client-side subtitle support needed. | Watching in a browser / Plex Web. |
 | **`library`** | Scans your Plex library and writes an English `.srt` next to every KO/JA movie/episode that lacks English subs (Plex auto-detects sidecar files). | Pre-translate a show/film before you sit down. |
 
 > **Note on "real-time".** Whisper is not a word-by-word streaming model, so live
@@ -104,6 +105,37 @@ Tuning:
 plextranslator live --chunk-seconds 45 --lead-seconds 180 --use-llm
 ```
 
+### Web — subtitles in a browser (Plex Web & other browser players)
+
+```bash
+plextranslator web                       # serve at http://127.0.0.1:8765
+plextranslator web --host 0.0.0.0 --port 9000 --use-llm
+```
+
+Then open `http://127.0.0.1:8765/` in a browser and start playing a Korean or
+Japanese title in Plex (e.g. in another tab via Plex Web). The overlay page shows
+the current English line, synced to your real playback position.
+
+How it stays in sync: a background poller tracks the active Plex session's
+playhead (interpolating between polls for smooth, sub-second timing) while the
+translation pipeline generates cues ahead of you. The page receives the current
+line over Server-Sent Events. Controls let you bump the font size and nudge the
+timing (±0.5 s) if it drifts.
+
+Endpoints (stdlib-only HTTP server, no framework):
+
+| Path | Purpose |
+|------|---------|
+| `/` | The subtitle overlay page (place it over your video). |
+| `/events` | Server-Sent Events stream of the current line + state. |
+| `/subtitles.vtt` | Live-growing WebVTT — load it as a `<track>` in any player. |
+| `/state` | JSON snapshot (current line, playhead, status). |
+
+> The overlay shows subtitles for whatever Plex is playing. To literally lay it
+> *over* the video, run Plex Web and the overlay in separate windows and position
+> the overlay on top, or use the `/subtitles.vtt` track in a player that supports
+> external subtitle URLs.
+
 ### Library — pre-translate KO/JA media
 
 ```bash
@@ -175,6 +207,7 @@ plextranslator/
   pipeline.py      # extract → translate → refine; chunk planner
   library.py       # batch mode
   live.py          # live/follow-the-playhead mode
+  web.py           # browser overlay server (SSE) synced to Plex playback
   cli.py           # argparse entrypoint
 ```
 

@@ -55,6 +55,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--poll-interval", dest="poll_interval", type=int, help="Session poll interval."
     )
 
+    # web
+    p_web = sub.add_parser(
+        "web", help="Serve a browser subtitle overlay synced to Plex playback."
+    )
+    _add_common_plex_args(p_web)
+    p_web.add_argument("--host", default="127.0.0.1", help="Bind host (default 127.0.0.1).")
+    p_web.add_argument("--port", type=int, default=8765, help="Bind port (default 8765).")
+    p_web.add_argument(
+        "--chunk-seconds", dest="chunk_seconds", type=int, help="Seconds per chunk."
+    )
+    p_web.add_argument(
+        "--lead-seconds", dest="lead_seconds", type=int, help="Seconds to stay ahead."
+    )
+    p_web.add_argument(
+        "--poll-interval", dest="poll_interval", type=int, help="Session poll interval."
+    )
+
     # library
     p_lib = sub.add_parser("library", help="Batch-subtitle the KO/JA library.")
     _add_common_plex_args(p_lib)
@@ -127,6 +144,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "live":
         return _cmd_live(config)
+    if args.command == "web":
+        return _cmd_web(config, args)
     if args.command == "library":
         return _cmd_library(config, args)
 
@@ -181,6 +200,16 @@ def _cmd_live(config: Config) -> int:
         subtitler.run_forever()
     except KeyboardInterrupt:
         print("\nStopped.")
+    return 0
+
+
+def _cmd_web(config: Config, args: argparse.Namespace) -> int:
+    from .web import run_web
+
+    try:
+        run_web(config, host=args.host, port=args.port)
+    except KeyboardInterrupt:
+        pass
     return 0
 
 

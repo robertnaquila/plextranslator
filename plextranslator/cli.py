@@ -72,6 +72,46 @@ def build_parser() -> argparse.ArgumentParser:
         "--poll-interval", dest="poll_interval", type=int, help="Session poll interval."
     )
 
+    # capture (system-audio -> live captions; works for Netflix, any browser video)
+    p_cap = sub.add_parser(
+        "capture",
+        help="Live English captions from system audio (Netflix & any streaming). No Plex needed.",
+    )
+    p_cap.add_argument("--model", dest="whisper_model", help="Whisper model size.")
+    p_cap.add_argument("--device", help="Whisper compute device: auto | cpu | cuda.")
+    p_cap.add_argument("--compute-type", dest="compute_type", help="Whisper compute type.")
+    p_cap.add_argument(
+        "--use-llm", dest="use_llm", action="store_true", default=None,
+        help="Refine captions with Claude.",
+    )
+    p_cap.add_argument("--anthropic-model", dest="anthropic_model", help="Claude model.")
+    p_cap.add_argument("-v", "--verbose", action="store_true", help="Debug logging.")
+    p_cap.add_argument("--host", default="127.0.0.1", help="Bind host (default 127.0.0.1).")
+    p_cap.add_argument("--port", type=int, default=8765, help="Bind port (default 8765).")
+    p_cap.add_argument(
+        "--audio-device",
+        dest="audio_device",
+        help="ffmpeg input device (a loopback/monitor source, NOT a mic). "
+        "Default is platform-specific.",
+    )
+    p_cap.add_argument(
+        "--audio-format",
+        dest="audio_format",
+        help="ffmpeg input format (pulse | avfoundation | dshow | ...).",
+    )
+    p_cap.add_argument(
+        "--window-seconds", dest="window_seconds", type=float, default=6.0,
+        help="Audio window translated at a time (default 6).",
+    )
+    p_cap.add_argument(
+        "--overlap-seconds", dest="overlap_seconds", type=float, default=0.5,
+        help="Overlap between windows so words aren't clipped (default 0.5).",
+    )
+    p_cap.add_argument(
+        "--source-language", dest="source_language",
+        help="Force source language (ko/ja); default: auto-detect.",
+    )
+
     # library
     p_lib = sub.add_parser("library", help="Batch-subtitle the KO/JA library.")
     _add_common_plex_args(p_lib)
@@ -134,6 +174,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _cmd_config(config)
     if args.command == "file":
         return _cmd_file(config, args)
+    if args.command == "capture":
+        return _cmd_capture(config, args)
 
     # live and library both need a valid Plex connection.
     problems = config.validate()
@@ -200,6 +242,25 @@ def _cmd_live(config: Config) -> int:
         subtitler.run_forever()
     except KeyboardInterrupt:
         print("\nStopped.")
+    return 0
+
+
+def _cmd_capture(config: Config, args: argparse.Namespace) -> int:
+    from .capture import run_capture
+
+    try:
+        run_capture(
+            config,
+            host=args.host,
+            port=args.port,
+            device=args.audio_device,
+            input_format=args.audio_format,
+            window_seconds=args.window_seconds,
+            overlap_seconds=args.overlap_seconds,
+            source_language=args.source_language,
+        )
+    except KeyboardInterrupt:
+        pass
     return 0
 
 

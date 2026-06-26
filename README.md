@@ -15,6 +15,7 @@ It works two ways:
 |------|--------------|----------------|
 | **`live`** | Follows whatever Korean/Japanese title you're currently playing, generating English subtitles in chunks that race *ahead* of the playhead and upload to Plex as you watch. | "Press play and start understanding it now." |
 | **`web`** | Serves a **browser subtitle overlay** synced to your Plex playback. Open it in a tab (Plex Web users especially), and live English subtitles appear in time with the video — no client-side subtitle support needed. | Watching in a browser / Plex Web. |
+| **`capture`** | **Netflix & any browser streaming.** Captures the audio your computer is playing, translates it on the fly, and shows live English captions in the browser overlay. No Plex, no media file needed. | Netflix, Disney+, YouTube — anything with KO/JA audio. |
 | **`library`** | Scans your Plex library and writes an English `.srt` next to every KO/JA movie/episode that lacks English subs (Plex auto-detects sidecar files). | Pre-translate a show/film before you sit down. |
 
 > **Note on "real-time".** Whisper is not a word-by-word streaming model, so live
@@ -136,6 +137,40 @@ Endpoints (stdlib-only HTTP server, no framework):
 > the overlay on top, or use the `/subtitles.vtt` track in a player that supports
 > external subtitle URLs.
 
+### Capture — Netflix and any browser streaming
+
+Streaming services like **Netflix** don't expose the media file (the audio is
+DRM-protected) and there's no playback position to read — so the file-based modes
+above can't touch them. Instead, `capture` listens to the audio your computer is
+**playing** and translates it live:
+
+```bash
+plextranslator capture                      # serve overlay at http://127.0.0.1:8765
+plextranslator capture --source-language ko # force Korean
+plextranslator capture --use-llm --window-seconds 5
+```
+
+Open `http://127.0.0.1:8765/` in a browser, start your Korean/Japanese title on
+Netflix (or anywhere), and English captions roll in with a few seconds' latency.
+This needs no Plex and works for **any** app that plays audio.
+
+> **Important: capture a loopback/"monitor" device, not your microphone** — or
+> you'll transcribe the room instead of the show. You point ffmpeg at the device
+> that mirrors your speaker output:
+
+| OS | Setup | Example |
+|----|-------|---------|
+| **Linux** (PulseAudio/PipeWire) | Use your output's `.monitor` source. List them with `pactl list short sources`. | `plextranslator capture --audio-format pulse --audio-device "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"` |
+| **macOS** | Install a virtual loopback like [BlackHole](https://existential.audio/blackhole/), route system output to it, then capture its avfoundation index (from `ffmpeg -f avfoundation -list_devices true -i ""`). | `plextranslator capture --audio-format avfoundation --audio-device ":2"` |
+| **Windows** | Enable **Stereo Mix** (Sound → Recording) or install [VB-CABLE](https://vb-audio.com/Cable/). | `plextranslator capture --audio-format dshow --audio-device "audio=Stereo Mix"` |
+
+Tuning: `--window-seconds` trades latency for accuracy (smaller = snappier but
+choppier); `--overlap-seconds` keeps words from being clipped at window edges.
+
+> Because each window is transcribed independently, capture mode is best on a
+> faster model (`medium`/`large-v3` on a GPU). On CPU, try `--model small` and a
+> larger `--window-seconds`.
+
 ### Library — pre-translate KO/JA media
 
 ```bash
@@ -208,6 +243,7 @@ plextranslator/
   library.py       # batch mode
   live.py          # live/follow-the-playhead mode
   web.py           # browser overlay server (SSE) synced to Plex playback
+  capture.py       # live system-audio capture (Netflix & any streaming)
   cli.py           # argparse entrypoint
 ```
 

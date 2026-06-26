@@ -120,3 +120,31 @@ class Transcriber:
                 )
             )
         return cues
+
+    def translate_samples(
+        self,
+        samples,
+        *,
+        source_language: Optional[str] = None,
+        beam_size: int = 5,
+    ) -> List[Cue]:
+        """Transcribe-and-translate raw audio ``samples`` (a float32 numpy array
+        of 16 kHz mono PCM) to English cues with window-relative timings.
+
+        Used by live system-audio capture, which already has decoded samples in
+        memory and doesn't go through a file.
+        """
+        model = self._ensure_model()
+        segments, _info = model.transcribe(
+            samples,
+            task="translate",
+            language=source_language,
+            beam_size=beam_size,
+            vad_filter=True,
+        )
+        cues: List[Cue] = []
+        for seg in segments:
+            text = (seg.text or "").strip()
+            if text:
+                cues.append(Cue(start=seg.start, end=seg.end, text=text))
+        return cues

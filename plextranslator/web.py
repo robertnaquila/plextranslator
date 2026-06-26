@@ -58,6 +58,10 @@ class SubtitleStore:
         self._sample_at: Optional[float] = None
         self.playing: bool = False
         self.status: str = "waiting"
+        # Live-caption mode (system-audio capture: no playhead, rolling lines).
+        self.live_mode: bool = False
+        self._live_caption: str = ""
+        self._live_caption_until: float = 0.0
 
     # -- session lifecycle (poller) ---------------------------------------
 
@@ -135,6 +139,21 @@ class SubtitleStore:
         with self._lock:
             self.status = status
 
+    # -- live caption mode (capture) --------------------------------------
+
+    def start_live(self, title: str) -> None:
+        with self._lock:
+            self.live_mode = True
+            self.title = title
+            self.status = "listening"
+
+    def set_live_caption(self, text: str, *, hold_seconds: float) -> None:
+        with self._lock:
+            self.live_mode = True
+            self._live_caption = text
+            self._live_caption_until = self._clock() + hold_seconds
+            self.status = "captioning"
+
     # -- reads (HTTP handlers) --------------------------------------------
 
     def _estimated_playhead_locked(self) -> float:
@@ -152,6 +171,21 @@ class SubtitleStore:
 
     def snapshot(self, offset: float = 0.0) -> dict:
         with self._lock:
+            if self.live_mode:
+                now = self._clock()
+                line = self._live_caption if now < self._live_caption_until else ""
+                return {
+                    "title": self.title or "Live captions",
+                    "status": self.status,
+                    "playing": True,
+                    "playhead": 0.0,
+                    "line": line,
+                    "ready": bool(self._live_caption),
+                    "generated_until": 0.0,
+                    "duration": 0.0,
+                    "cue_count": 0,
+                    "live": True,
+                }
             playhead = self._estimated_playhead_locked()
             active = cue_at(self.cues, playhead + offset)
             return {

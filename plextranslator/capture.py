@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import logging
 import platform
+import queue
 import subprocess
 import threading
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from .config import Config
 from .dedupe import CaptionAccumulator
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
 BYTES_PER_SAMPLE = 2  # s16le
+READ_CHUNK = 32768  # bytes per ffmpeg stdout read
 
 
 def default_capture_input(platform_name: Optional[str] = None) -> dict:
@@ -91,6 +93,70 @@ def pcm16_to_float32(data: bytes):
     return np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
 
 
+def list_output_devices() -> List[tuple]:
+    """Return ``[(index, name), ...]`` of audio OUTPUT devices via sounddevice.
+
+    Used by ``capture --list-monitor-devices`` so you can find your Samsung
+    output to pass to ``--monitor-device``.
+    """
+    import sounddevice as sd  # lazy: only needed for monitor playback
+
+    devices = sd.query_devices()
+    return [
+        (i, d["name"])
+        for i, d in enumerate(devices)
+        if d.get("max_output_channels", 0) > 0
+    ]
+
+
+class _Monitor:
+    """Plays captured PCM out to a chosen device so you can still hear it.
+
+    The stream is 16 kHz mono (what we capture for Whisper) — fine for following
+    dialogue, lower fidelity than the original (no stereo / high frequencies).
+    Returns None from :func:`open_monitor` if sounddevice is missing or the
+    device can't be opened, so capture/captions continue regardless.
+    """
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+
+    def write(self, data: bytes) -> None:
+        try:
+            self._stream.write(data)
+        except Exception as exc:  # noqa: BLE001 - never let playback kill capture
+            logger.debug("monitor write dropped: %s", exc)
+
+    def close(self) -> None:
+        try:
+            self._stream.stop()
+            self._stream.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def open_monitor(device) -> Optional["_Monitor"]:
+    try:
+        import sounddevice as sd
+    except ImportError:
+        logger.error(
+            "sounddevice not installed — run `pip install sounddevice` to use "
+            "--monitor-device. Continuing without audio passthrough."
+        )
+        return None
+    try:
+        dev = int(device) if str(device).isdigit() else device
+        stream = sd.RawOutputStream(
+            samplerate=SAMPLE_RATE, channels=1, dtype="int16", device=dev
+        )
+        stream.start()
+        logger.info("Monitoring audio to output device: %r", device)
+        return _Monitor(stream)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Could not open monitor output %r: %s", device, exc)
+        return None
+
+
 class AudioCaptureEngine(_StoppableThread):
     """Captures system audio and publishes rolling English captions."""
 
@@ -106,6 +172,7 @@ class AudioCaptureEngine(_StoppableThread):
         source_language: Optional[str] = None,
         title: str = "Live captions (system audio)",
         dedupe: bool = True,
+        monitor_device=None,
         transcriber: Optional[Transcriber] = None,
     ) -> None:
         super().__init__(name="plextranslator-capture")
@@ -117,6 +184,7 @@ class AudioCaptureEngine(_StoppableThread):
         self.overlap_seconds = overlap_seconds
         self.source_language = source_language
         self.title = title
+        self.monitor_device = monitor_device
         self.accumulator = CaptionAccumulator() if dedupe else None
         self.transcriber = transcriber or make_transcriber(config)
         self.refiner: Optional[Refiner] = None
@@ -127,8 +195,6 @@ class AudioCaptureEngine(_StoppableThread):
 
     def run(self) -> None:  # pragma: no cover - needs ffmpeg + an audio device
         self.store.start_live(self.title)
-        window_bytes = int(self.window_seconds * SAMPLE_RATE * BYTES_PER_SAMPLE)
-        overlap_bytes = int(self.overlap_seconds * SAMPLE_RATE * BYTES_PER_SAMPLE)
         cmd = build_capture_cmd(self.device, self.input_format)
         logger.info("Capturing audio: %s", " ".join(cmd))
         try:
@@ -140,28 +206,77 @@ class AudioCaptureEngine(_StoppableThread):
             self.store.set_status("error: ffmpeg not found")
             return
 
-        buf = bytearray()
+        monitor = open_monitor(self.monitor_device) if self.monitor_device is not None else None
+        reader: Optional[threading.Thread] = None
         try:
-            while not self.stopped:
-                want = window_bytes - len(buf)
-                chunk = proc.stdout.read(max(want, 1)) if want > 0 else b""
-                if not chunk:
-                    if proc.poll() is not None:
-                        err = proc.stderr.read().decode("utf-8", "replace")[-500:]
-                        logger.error("Audio capture ended: %s", err.strip())
-                        self.store.set_status("error: capture stopped (check device)")
-                        break
-                    continue
-                buf.extend(chunk)
-                if len(buf) >= window_bytes:
-                    self._process_window(bytes(buf))
-                    # keep a short overlap so words spanning the boundary aren't lost
-                    buf = bytearray(buf[-overlap_bytes:]) if overlap_bytes else bytearray()
+            if monitor is not None:
+                # A reader thread tees ffmpeg's audio to the output device (so you
+                # still hear it) and feeds transcription via a queue — decoupling
+                # playback from the (bursty) transcription so audio stays smooth.
+                q: "queue.Queue" = queue.Queue()
+                reader = threading.Thread(
+                    target=self._reader, args=(proc, q, monitor), daemon=True
+                )
+                reader.start()
+                self._process_stream(q.get)
+            else:
+                self._process_stream(self._make_stdout_getter(proc))
         finally:
             try:
                 proc.terminate()
             except Exception:  # noqa: BLE001
                 pass
+            if reader is not None:
+                reader.join(timeout=2)
+            if monitor is not None:
+                monitor.close()
+
+    def _make_stdout_getter(self, proc) -> Callable[[], Optional[bytes]]:
+        """Chunk source that reads ffmpeg stdout directly (no monitor)."""
+
+        def get() -> Optional[bytes]:
+            chunk = proc.stdout.read(READ_CHUNK)
+            if not chunk:
+                if proc.poll() is not None:
+                    err = proc.stderr.read().decode("utf-8", "replace")[-500:]
+                    logger.error("Audio capture ended: %s", err.strip())
+                    self.store.set_status("error: capture stopped (check device)")
+                return None  # EOF
+            return chunk
+
+        return get
+
+    def _reader(self, proc, q: "queue.Queue", monitor: "_Monitor") -> None:
+        """Read ffmpeg, play to the monitor device, and enqueue for transcription."""
+        try:
+            while not self.stopped:
+                chunk = proc.stdout.read(READ_CHUNK)
+                if not chunk:
+                    break
+                monitor.write(chunk)
+                q.put(chunk)
+        finally:
+            q.put(None)  # sentinel -> _process_stream stops
+
+    def _process_stream(self, get_chunk: Callable[[], Optional[bytes]]) -> None:
+        """Accumulate fixed windows from a chunk source and transcribe each.
+
+        ``get_chunk`` returns bytes, ``b""`` to skip, or ``None`` at end-of-stream.
+        """
+        window_bytes = int(self.window_seconds * SAMPLE_RATE * BYTES_PER_SAMPLE)
+        overlap_bytes = int(self.overlap_seconds * SAMPLE_RATE * BYTES_PER_SAMPLE)
+        buf = bytearray()
+        while not self.stopped:
+            chunk = get_chunk()
+            if chunk is None:
+                break
+            if not chunk:
+                continue
+            buf.extend(chunk)
+            if len(buf) >= window_bytes:
+                self._process_window(bytes(buf))
+                # keep a short overlap so words spanning the boundary aren't lost
+                buf = bytearray(buf[-overlap_bytes:]) if overlap_bytes else bytearray()
 
     def _process_window(self, raw: bytes) -> None:
         try:
@@ -197,6 +312,7 @@ def run_capture(
     overlap_seconds: float = 0.5,
     source_language: Optional[str] = None,
     dedupe: bool = True,
+    monitor_device=None,
 ) -> None:
     """Start audio capture + the web overlay server. Serves until interrupted."""
     from .web import make_server
@@ -215,12 +331,15 @@ def run_capture(
         overlap_seconds=overlap_seconds,
         source_language=source_language,
         dedupe=dedupe,
+        monitor_device=monitor_device,
     )
     engine.start()
     server = make_server(store, host, port)
     url = f"http://{host}:{port}/"
     print(f"plextranslator live captions running at {url}")
     print(f"Capturing audio from: [{input_format}] {device}")
+    if monitor_device is not None:
+        print(f"Playing audio through monitor device: {monitor_device}")
     print("Open the overlay in a browser, then play Netflix (or anything) with")
     print("Korean/Japanese audio. Ctrl-C to stop.")
     try:

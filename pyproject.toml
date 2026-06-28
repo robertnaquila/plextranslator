@@ -31,6 +31,11 @@ whispercpp = [
     "requests>=2.31.0",
     "numpy>=1.24",
 ]
+# Optional audio passthrough for `capture --monitor-device` (hear the audio
+# while it's captured for captions).
+monitor = [
+    "sounddevice>=0.4",
+]
 # Optional LLM refinement of Whisper's literal translation.
 llm = [
     "anthropic>=0.40.0",

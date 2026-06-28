@@ -196,6 +196,26 @@ This needs no Plex and works for **any** app that plays audio.
 Tuning: `--window-seconds` trades latency for accuracy (smaller = snappier but
 choppier); `--overlap-seconds` keeps words from being clipped at window edges.
 
+**Still hearing the audio (`--monitor-device`).** To capture system audio you
+normally route playback to a loopback device (e.g. Stereo Mix), which can leave
+you unable to hear it on your usual speakers. Rather than fight Windows' "Listen
+to this device" routing, plextranslator can play the captured audio out to a
+device of your choice:
+
+```bash
+pip install sounddevice
+plextranslator capture --list-monitor-devices          # find your output, e.g. Samsung
+plextranslator capture --source-language ja --model small `
+  --audio-format dshow --audio-device "audio=Stereo Mix (Realtek High Definition Audio)" `
+  --monitor-device "Samsung"
+```
+
+`--monitor-device` takes a device-name substring or index from
+`--list-monitor-devices`. The passthrough is 16 kHz mono (fine for dialogue,
+lower fidelity than the original) and runs a beat behind the video. If you can
+get Windows' "Listen to this device" working, that's higher fidelity; this is the
+fallback when audio routing won't cooperate.
+
 Captions are **de-duplicated and smoothed**: because consecutive windows overlap,
 their translations repeat boundary words (window A ends "…running away", window B
 starts "away from us"). plextranslator merges windows into one continuous

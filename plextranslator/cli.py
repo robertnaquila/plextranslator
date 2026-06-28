@@ -139,6 +139,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-dedupe", dest="dedupe", action="store_false",
         help="Disable overlap de-duplication (show each window verbatim).",
     )
+    p_cap.add_argument(
+        "--monitor-device", dest="monitor_device",
+        help="Also play captured audio out to this output device (name substring "
+        "or index) so you can still hear it. Needs `pip install sounddevice`.",
+    )
+    p_cap.add_argument(
+        "--list-monitor-devices", dest="list_monitor_devices", action="store_true",
+        help="List audio output devices for --monitor-device, then exit.",
+    )
 
     # library
     p_lib = sub.add_parser("library", help="Batch-subtitle the KO/JA library.")
@@ -298,6 +307,22 @@ def _cmd_doctor(config: Config) -> int:
 def _cmd_capture(config: Config, args: argparse.Namespace) -> int:
     from .capture import run_capture
 
+    if getattr(args, "list_monitor_devices", False):
+        from .capture import list_output_devices
+
+        try:
+            devices = list_output_devices()
+        except ImportError:
+            print(
+                "sounddevice not installed. Run: pip install sounddevice",
+                file=sys.stderr,
+            )
+            return 2
+        print("Audio output devices (use the index or a name substring):")
+        for index, name in devices:
+            print(f"  [{index}] {name}")
+        return 0
+
     try:
         run_capture(
             config,
@@ -309,6 +334,7 @@ def _cmd_capture(config: Config, args: argparse.Namespace) -> int:
             overlap_seconds=args.overlap_seconds,
             source_language=args.source_language,
             dedupe=args.dedupe,
+            monitor_device=args.monitor_device,
         )
     except KeyboardInterrupt:
         pass

@@ -36,6 +36,11 @@ class Config:
     # Plex
     plex_baseurl: str = "http://127.0.0.1:32400"
     plex_token: str = ""
+    # Rewrite the media paths Plex reports to where they're mounted locally, for
+    # running off-host (e.g. Plex on a NAS, this app on a stronger PC). Format:
+    # "plex_prefix=>local_prefix", multiple separated by ';' or ','. Example:
+    # "/volume1/video=>/mnt/plex". Empty = no remapping (app runs on the Plex host).
+    path_map: str = ""
 
     # Whisper
     whisper_model: str = "large-v3"
@@ -63,6 +68,7 @@ class Config:
         return cls(
             plex_baseurl=os.environ.get("PLEX_BASEURL", cls.plex_baseurl),
             plex_token=os.environ.get("PLEX_TOKEN", cls.plex_token),
+            path_map=os.environ.get("PLEXTRANSLATOR_PATH_MAP", cls.path_map),
             whisper_model=os.environ.get("PLEXTRANSLATOR_WHISPER_MODEL", cls.whisper_model),
             device=os.environ.get("PLEXTRANSLATOR_DEVICE", cls.device),
             compute_type=os.environ.get("PLEXTRANSLATOR_COMPUTE_TYPE", cls.compute_type),

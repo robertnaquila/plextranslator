@@ -231,7 +231,9 @@ class PlexPoller(_StoppableThread):
         super().__init__(name="plextranslator-poller")
         self.config = config
         self.store = store
-        self.plex = plex or PlexClient(config.plex_baseurl, config.plex_token)
+        self.plex = plex or PlexClient(
+            config.plex_baseurl, config.plex_token, config.path_map
+        )
 
     def run(self) -> None:  # pragma: no cover - exercised against a live server
         while not self.stopped:

@@ -15,6 +15,13 @@ def _add_common_plex_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--plex-url", dest="plex_baseurl", help="Plex base URL.")
     parser.add_argument("--plex-token", dest="plex_token", help="Plex auth token.")
     parser.add_argument(
+        "--path-map",
+        dest="path_map",
+        help="Rewrite Plex media paths to local mounts, e.g. "
+        "'/volume1/video=>/mnt/plex' (';'-separated for multiple). "
+        "Use when running off the Plex host.",
+    )
+    parser.add_argument(
         "--model", dest="whisper_model", help="Whisper model size (e.g. large-v3)."
     )
     parser.add_argument("--device", help="auto | cpu | cuda.")
@@ -157,6 +164,7 @@ def _config_from_args(args: argparse.Namespace) -> Config:
     return Config.from_env().merge(
         plex_baseurl=getattr(args, "plex_baseurl", None),
         plex_token=getattr(args, "plex_token", None),
+        path_map=getattr(args, "path_map", None),
         whisper_model=getattr(args, "whisper_model", None),
         device=getattr(args, "device", None),
         compute_type=getattr(args, "compute_type", None),

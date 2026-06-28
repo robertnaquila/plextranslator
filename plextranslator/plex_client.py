@@ -22,6 +22,40 @@ def normalize_lang(code: Optional[str]) -> str:
     return code.strip().lower()
 
 
+def parse_path_map(spec: str) -> List[tuple]:
+    """Parse a path-map spec into ``[(plex_prefix, local_prefix), ...]``.
+
+    Format: ``"plex_prefix=>local_prefix"`` entries separated by ``;`` or
+    newlines. Lets the app run off-host (e.g. Plex on a NAS reports
+    ``/volume1/video/...`` while this machine mounts it at ``/mnt/plex``).
+    """
+    pairs: List[tuple] = []
+    if not spec:
+        return pairs
+    for entry in spec.replace("\n", ";").split(";"):
+        entry = entry.strip()
+        if not entry or "=>" not in entry:
+            continue
+        src, dst = entry.split("=>", 1)
+        src, dst = src.strip(), dst.strip()
+        if src and dst:
+            pairs.append((src, dst))
+    # Longest source prefix first so the most specific mapping wins.
+    pairs.sort(key=lambda p: len(p[0]), reverse=True)
+    return pairs
+
+
+def remap_path(path: str, pairs: List[tuple]) -> str:
+    """Apply the first matching prefix rewrite to ``path`` (or return unchanged)."""
+    if not path or not pairs:
+        return path
+    for src, dst in pairs:
+        if path == src or path.startswith(src.rstrip("/") + "/"):
+            suffix = path[len(src):]
+            return dst.rstrip("/") + suffix if suffix.startswith("/") else dst + suffix
+    return path
+
+
 def is_target_language(code: Optional[str]) -> bool:
     """True if ``code`` denotes Korean or Japanese."""
     return normalize_lang(code) in TARGET_LANGUAGES
@@ -73,10 +107,14 @@ class PlaybackSession:
 class PlexClient:
     """Wraps a plexapi.server.PlexServer connection."""
 
-    def __init__(self, baseurl: str, token: str) -> None:
+    def __init__(self, baseurl: str, token: str, path_map: str = "") -> None:
         self.baseurl = baseurl
         self.token = token
+        self._path_pairs = parse_path_map(path_map)
         self._server = None
+
+    def _local_path(self, path: str) -> str:
+        return remap_path(path, self._path_pairs)
 
     def _ensure_server(self):
         if self._server is not None:
@@ -130,7 +168,7 @@ class PlexClient:
         return MediaItem(
             rating_key=str(video.ratingKey),
             title=video.title,
-            file_path=part.file,
+            file_path=self._local_path(part.file),
             audio_languages=audio_langs,
             has_english_subs=has_en_subs,
             audio_track_index=pick_target_audio_index(audio_langs),
@@ -157,7 +195,7 @@ class PlexClient:
             return PlaybackSession(
                 rating_key=str(session.ratingKey),
                 title=session.title,
-                file_path=part.file,
+                file_path=self._local_path(part.file),
                 view_offset_seconds=(session.viewOffset or 0) / 1000.0,
                 duration_seconds=(session.duration or 0) / 1000.0,
                 audio_languages=audio_langs,

@@ -34,7 +34,7 @@ def run_library(
     dry_run: bool = False,
 ) -> int:
     """Process the library. Returns the number of items subtitled."""
-    plex = PlexClient(config.plex_baseurl, config.plex_token)
+    plex = PlexClient(config.plex_baseurl, config.plex_token, config.path_map)
     pipeline: Optional[Pipeline] = None  # built lazily so dry runs need no model
     processed = 0
 

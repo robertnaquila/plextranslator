@@ -225,6 +225,56 @@ natural subtitle English, one line in → one line out, so timings stay aligned.
 It's best-effort: if the API call fails or returns the wrong number of lines, the
 original Whisper text is kept.
 
+## Synology / NAS deployment
+
+You can run plextranslator on the same box as Plex (Synology, etc.) via Docker.
+
+> ⚠️ **CPU reality check (important).** Real-time translation needs a capable CPU
+> (ideally a GPU). Low-power NAS CPUs — notably the **Intel Atom C2538 in the
+> DS1517+**, which has **no AVX** — are a poor fit: faster-whisper's CTranslate2
+> backend often *requires* AVX and may fail with `Illegal instruction`, and even
+> when it runs it's far slower than real-time. On such a NAS, use it only for
+> **overnight `library` batch** with a small model, and don't expect `live`/`web`
+> to keep up. For real-time, use **Architecture A** below.
+
+### Architecture A — real-time on a stronger PC, Plex stays on the NAS
+
+Run the app on a machine with AVX / a GPU that mounts your NAS media share. The
+path Plex reports (`/volume1/video/...`) won't match your mount (`/mnt/plex`), so
+use `--path-map` (or `PLEXTRANSLATOR_PATH_MAP`):
+
+```bash
+plextranslator live \
+  --plex-url http://<nas-ip>:32400 --plex-token <token> \
+  --path-map "/volume1/video=>/mnt/plex" \
+  --model large-v3
+```
+
+### Architecture B — NAS-only overnight batch (Docker / Container Manager)
+
+```bash
+cp .env.example .env          # set PLEX_BASEURL + PLEX_TOKEN
+# Edit docker-compose.yml: point the media volume at YOUR library path,
+# mounted at the SAME path Plex uses (so sidecars land next to the media).
+
+docker compose run --rm plextranslator config   # validate
+docker compose up plextranslator                 # runs `library` (batch)
+```
+
+The compose file mounts a `./models` volume so the Whisper model is downloaded
+once and reused. Build with the LLM extra (`EXTRAS: run,llm`) to enable
+`--use-llm`.
+
+**Schedule it** (DSM **Control Panel → Task Scheduler → Create → Scheduled Task →
+User-defined script**, run nightly):
+
+```sh
+# either the container form...
+cd /volume1/docker/plextranslator && docker compose run --rm plextranslator library
+# ...or the bundled helper (skips items that already have English subs):
+/volume1/docker/plextranslator/scripts/translate_new.sh "Korean Films" "Japanese Films"
+```
+
 ## Development
 
 ```bash
@@ -253,6 +303,9 @@ plextranslator/
   capture.py       # live system-audio capture (Netflix & any streaming)
   dedupe.py        # overlap de-duplication / smoothing for rolling captions
   cli.py           # argparse entrypoint
+Dockerfile          # container (ffmpeg + plextranslator)
+docker-compose.yml  # Synology / Docker deployment (batch or web)
+scripts/translate_new.sh  # nightly batch helper for Task Scheduler / cron
 ```
 
 ## Limitations & notes

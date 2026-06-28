@@ -77,7 +77,9 @@ class LiveSubtitler:
     ) -> None:
         self.config = config
         self.pipeline = pipeline or Pipeline(config)
-        self.plex = plex or PlexClient(config.plex_baseurl, config.plex_token)
+        self.plex = plex or PlexClient(
+            config.plex_baseurl, config.plex_token, config.path_map
+        )
         self.sleep = sleeper
 
     def run_forever(self, *, max_iterations: Optional[int] = None) -> None:

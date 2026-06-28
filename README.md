@@ -227,6 +227,26 @@ sentence or two, so captions read smoothly instead of stuttering. Pass
 > faster model (`medium`/`large-v3` on a GPU). On CPU, try `--model small` and a
 > larger `--window-seconds`.
 
+### One-click Korean (best quality) — Windows
+
+`scripts/watch-korean.ps1` wraps capture mode for Korean shows with the best
+Whisper model (`large-v3`) and Claude (LLM) refinement, and opens the overlay for
+you. Double-click `scripts/watch-korean.bat`, or run the `.ps1` from PowerShell.
+
+One-time setup:
+```powershell
+pip install -e ".[run,llm,monitor]"
+# put your Claude key in a .env file in the repo root:
+#   ANTHROPIC_API_KEY=sk-ant-...
+```
+Then edit the `settings` block at the top of `watch-korean.ps1` (your capture
+device name, and `--monitor-device` if you use it instead of Windows "Listen").
+
+> ⚠️ **`large-v3` on a CPU (no GPU) is heavy** and may fall progressively behind
+> on long shows; LLM refinement adds a second or two per line too. If captions
+> lag, change `$Model` to `medium` (or `small`) in the script. The model affects
+> quality and caption delay, not the audio you hear.
+
 ### Library — pre-translate KO/JA media
 
 ```bash

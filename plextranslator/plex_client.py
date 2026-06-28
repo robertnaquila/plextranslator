@@ -204,6 +204,19 @@ class PlexClient:
             )
         return None
 
+    def server_info(self) -> dict:
+        """Connect and return basic server facts; raises on connection failure.
+
+        Used by ``plextranslator doctor`` to verify connectivity.
+        """
+        server = self._ensure_server()
+        sections = server.library.sections()
+        return {
+            "name": getattr(server, "friendlyName", "?"),
+            "version": getattr(server, "version", "?"),
+            "sections": [s.title for s in sections],
+        }
+
     def upload_subtitle(self, rating_key: str, srt_path: str, language: str = "en") -> None:
         """Upload an .srt to the Plex item so it shows up as a subtitle track."""
         server = self._ensure_server()

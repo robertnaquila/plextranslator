@@ -42,10 +42,19 @@ class Config:
     # "/volume1/video=>/mnt/plex". Empty = no remapping (app runs on the Plex host).
     path_map: str = ""
 
-    # Whisper
+    # Transcription backend: "faster-whisper" (GPU/AVX CPUs) or "whisper.cpp"
+    # (runs on non-AVX CPUs like the Synology DS1517+ Atom).
+    backend: str = "faster-whisper"
+
+    # Whisper (faster-whisper backend)
     whisper_model: str = "large-v3"
     device: str = "auto"
     compute_type: str = "auto"
+
+    # whisper.cpp backend
+    whisper_cpp_bin: str = "whisper-cli"
+    whisper_cpp_model: str = ""  # path to a ggml model, e.g. /models/ggml-small.bin
+    whisper_cpp_threads: int = 0  # 0 = whisper.cpp default
 
     # Output
     output_dir: str = "./subtitles_out"
@@ -69,9 +78,19 @@ class Config:
             plex_baseurl=os.environ.get("PLEX_BASEURL", cls.plex_baseurl),
             plex_token=os.environ.get("PLEX_TOKEN", cls.plex_token),
             path_map=os.environ.get("PLEXTRANSLATOR_PATH_MAP", cls.path_map),
+            backend=os.environ.get("PLEXTRANSLATOR_BACKEND", cls.backend),
             whisper_model=os.environ.get("PLEXTRANSLATOR_WHISPER_MODEL", cls.whisper_model),
             device=os.environ.get("PLEXTRANSLATOR_DEVICE", cls.device),
             compute_type=os.environ.get("PLEXTRANSLATOR_COMPUTE_TYPE", cls.compute_type),
+            whisper_cpp_bin=os.environ.get(
+                "PLEXTRANSLATOR_WHISPER_CPP_BIN", cls.whisper_cpp_bin
+            ),
+            whisper_cpp_model=os.environ.get(
+                "PLEXTRANSLATOR_WHISPER_CPP_MODEL", cls.whisper_cpp_model
+            ),
+            whisper_cpp_threads=_env_int(
+                "PLEXTRANSLATOR_WHISPER_CPP_THREADS", cls.whisper_cpp_threads
+            ),
             output_dir=os.environ.get("PLEXTRANSLATOR_OUTPUT_DIR", cls.output_dir),
             write_sidecar=_env_bool("PLEXTRANSLATOR_WRITE_SIDECAR", cls.write_sidecar),
             subtitle_language=os.environ.get(
@@ -95,6 +114,15 @@ class Config:
     def validate(self) -> list[str]:
         """Return a list of human-readable problems; empty means OK."""
         problems: list[str] = []
+        if self.backend not in {"faster-whisper", "whisper.cpp"}:
+            problems.append(
+                f"Unknown backend {self.backend!r} (use faster-whisper or whisper.cpp)."
+            )
+        if self.backend == "whisper.cpp" and not self.whisper_cpp_model:
+            problems.append(
+                "whisper.cpp backend selected but no model set "
+                "(PLEXTRANSLATOR_WHISPER_CPP_MODEL or --whisper-cpp-model)."
+            )
         if not self.plex_baseurl:
             problems.append("Plex base URL is not set (PLEX_BASEURL).")
         if not self.plex_token:

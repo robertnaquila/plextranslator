@@ -22,10 +22,27 @@ def _add_common_plex_args(parser: argparse.ArgumentParser) -> None:
         "Use when running off the Plex host.",
     )
     parser.add_argument(
+        "--backend",
+        choices=["faster-whisper", "whisper.cpp"],
+        help="Transcription backend (whisper.cpp runs on non-AVX CPUs like a NAS).",
+    )
+    parser.add_argument(
         "--model", dest="whisper_model", help="Whisper model size (e.g. large-v3)."
     )
     parser.add_argument("--device", help="auto | cpu | cuda.")
     parser.add_argument("--compute-type", dest="compute_type", help="Whisper compute type.")
+    parser.add_argument(
+        "--whisper-cpp-bin", dest="whisper_cpp_bin",
+        help="Path to the whisper.cpp 'whisper-cli' binary.",
+    )
+    parser.add_argument(
+        "--whisper-cpp-model", dest="whisper_cpp_model",
+        help="Path to a whisper.cpp ggml model (e.g. /models/ggml-small.bin).",
+    )
+    parser.add_argument(
+        "--whisper-cpp-threads", dest="whisper_cpp_threads", type=int,
+        help="Threads for whisper.cpp (0 = its default).",
+    )
     parser.add_argument(
         "--use-llm",
         dest="use_llm",
@@ -165,9 +182,13 @@ def _config_from_args(args: argparse.Namespace) -> Config:
         plex_baseurl=getattr(args, "plex_baseurl", None),
         plex_token=getattr(args, "plex_token", None),
         path_map=getattr(args, "path_map", None),
+        backend=getattr(args, "backend", None),
         whisper_model=getattr(args, "whisper_model", None),
         device=getattr(args, "device", None),
         compute_type=getattr(args, "compute_type", None),
+        whisper_cpp_bin=getattr(args, "whisper_cpp_bin", None),
+        whisper_cpp_model=getattr(args, "whisper_cpp_model", None),
+        whisper_cpp_threads=getattr(args, "whisper_cpp_threads", None),
         use_llm=getattr(args, "use_llm", None),
         anthropic_model=getattr(args, "anthropic_model", None),
         chunk_seconds=getattr(args, "chunk_seconds", None),

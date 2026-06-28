@@ -26,7 +26,7 @@ from typing import List, Optional
 from .config import Config
 from .dedupe import CaptionAccumulator
 from .subtitles import Cue
-from .transcriber import Transcriber
+from .transcriber import Transcriber, make_transcriber
 from .translator import Refiner
 from .web import SubtitleStore, _StoppableThread
 
@@ -118,11 +118,7 @@ class AudioCaptureEngine(_StoppableThread):
         self.source_language = source_language
         self.title = title
         self.accumulator = CaptionAccumulator() if dedupe else None
-        self.transcriber = transcriber or Transcriber(
-            model_size=config.whisper_model,
-            device=config.device,
-            compute_type=config.compute_type,
-        )
+        self.transcriber = transcriber or make_transcriber(config)
         self.refiner: Optional[Refiner] = None
         if config.use_llm and config.anthropic_api_key:
             self.refiner = Refiner(

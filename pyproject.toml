@@ -23,6 +23,14 @@ run = [
     "plexapi>=4.15.0",
     "requests>=2.31.0",
 ]
+# whisper.cpp backend (no ctranslate2 / no AVX requirement) — for low-power
+# CPUs like the Synology DS1517+. You also need the whisper.cpp 'whisper-cli'
+# binary and a ggml model; see the README "Synology / NAS deployment".
+whispercpp = [
+    "plexapi>=4.15.0",
+    "requests>=2.31.0",
+    "numpy>=1.24",
+]
 # Optional LLM refinement of Whisper's literal translation.
 llm = [
     "anthropic>=0.40.0",

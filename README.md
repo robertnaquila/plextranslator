@@ -231,11 +231,41 @@ You can run plextranslator on the same box as Plex (Synology, etc.) via Docker.
 
 > ⚠️ **CPU reality check (important).** Real-time translation needs a capable CPU
 > (ideally a GPU). Low-power NAS CPUs — notably the **Intel Atom C2538 in the
-> DS1517+**, which has **no AVX** — are a poor fit: faster-whisper's CTranslate2
-> backend often *requires* AVX and may fail with `Illegal instruction`, and even
-> when it runs it's far slower than real-time. On such a NAS, use it only for
-> **overnight `library` batch** with a small model, and don't expect `live`/`web`
-> to keep up. For real-time, use **Architecture A** below.
+> DS1517+**, which has **no AVX** — are a poor fit: the default faster-whisper
+> backend often *requires* AVX and may fail with `Illegal instruction`. For those
+> CPUs use the **whisper.cpp backend** (below), which runs without AVX. Even so,
+> the NAS is best for **overnight `library` batch** with a small model, not
+> real-time — for `live`/`web` use **Architecture A**.
+
+### Transcription backends
+
+| Backend | Set with | Runs on | Use it for |
+|---------|----------|---------|------------|
+| `faster-whisper` (default) | — | GPU, or AVX-capable CPU | Best quality/speed; real-time on a GPU. |
+| `whisper.cpp` | `--backend whisper.cpp` | **Any CPU, incl. non-AVX (Atom)** | Making a low-power NAS viable. |
+
+**Using the whisper.cpp backend** (e.g. on the DS1517+):
+
+1. Get the `whisper-cli` binary — build [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
+   with AVX disabled so it runs on the Atom, or use the Docker image below which
+   does this for you:
+   ```bash
+   cmake -S whisper.cpp -B build -DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF
+   cmake --build build -j --config Release   # -> build/bin/whisper-cli
+   ```
+2. Download a ggml model (e.g. `ggml-small.bin`) from
+   [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp).
+3. Run with the backend selected:
+   ```bash
+   plextranslator library \
+     --backend whisper.cpp \
+     --whisper-cpp-bin /usr/local/bin/whisper-cli \
+     --whisper-cpp-model /models/ggml-small.bin \
+     --whisper-cpp-threads 4
+   ```
+
+Install with the lighter extra that skips ctranslate2 entirely:
+`pip install -e '.[whispercpp]'`.
 
 ### Architecture A — real-time on a stronger PC, Plex stays on the NAS
 
@@ -260,6 +290,21 @@ cp .env.example .env          # set PLEX_BASEURL + PLEX_TOKEN
 docker compose run --rm plextranslator config   # validate
 docker compose up plextranslator                 # runs `library` (batch)
 ```
+
+On the **DS1517+ (no AVX)**, build the image with the whisper.cpp backend and
+point it at a ggml model:
+
+```bash
+docker build --build-arg WITH_WHISPERCPP=1 --build-arg EXTRAS=whispercpp \
+             -t plextranslator:nas .
+# Put a ggml model in ./models (e.g. ggml-small.bin), then in .env set:
+#   PLEXTRANSLATOR_BACKEND=whisper.cpp
+#   PLEXTRANSLATOR_WHISPER_CPP_MODEL=/models/ggml-small.bin
+docker compose run --rm plextranslator library
+```
+
+(The image's `whisper-cli` is compiled with AVX off, so it runs on the Atom even
+if you build the image on a newer machine.)
 
 The compose file mounts a `./models` volume so the Whisper model is downloaded
 once and reused. Build with the LLM extra (`EXTRAS: run,llm`) to enable

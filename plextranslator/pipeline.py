@@ -14,7 +14,7 @@ from typing import List, Optional
 from .audio import extract_audio
 from .config import Config
 from .subtitles import Cue
-from .transcriber import Transcriber
+from .transcriber import make_transcriber
 from .translator import Refiner
 
 logger = logging.getLogger(__name__)
@@ -61,11 +61,7 @@ class Pipeline:
 
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.transcriber = Transcriber(
-            model_size=config.whisper_model,
-            device=config.device,
-            compute_type=config.compute_type,
-        )
+        self.transcriber = make_transcriber(config)
         self.refiner: Optional[Refiner] = None
         if config.use_llm and config.anthropic_api_key:
             self.refiner = Refiner(

@@ -18,6 +18,11 @@ services:
       context: .
       args:
         EXTRAS: run            # use "run,llm" to enable --use-llm
+        # --- For a non-AVX NAS (DS1517+), use the whisper.cpp backend instead: ---
+        # EXTRAS: whispercpp
+        # WITH_WHISPERCPP: "1"
+        # and set PLEXTRANSLATOR_BACKEND=whisper.cpp +
+        #     PLEXTRANSLATOR_WHISPER_CPP_MODEL=/models/ggml-small.bin in .env
     image: plextranslator:latest
     container_name: plextranslator
     restart: "no"              # batch job; set "unless-stopped" only for web/live
@@ -26,6 +31,9 @@ services:
       - PLEX_TOKEN=${PLEX_TOKEN}
       - PLEXTRANSLATOR_WHISPER_MODEL=${PLEXTRANSLATOR_WHISPER_MODEL:-small}
       - PLEXTRANSLATOR_DEVICE=cpu
+      - PLEXTRANSLATOR_BACKEND=${PLEXTRANSLATOR_BACKEND:-faster-whisper}
+      - PLEXTRANSLATOR_WHISPER_CPP_MODEL=${PLEXTRANSLATOR_WHISPER_CPP_MODEL:-}
+      - PLEXTRANSLATOR_WHISPER_CPP_THREADS=${PLEXTRANSLATOR_WHISPER_CPP_THREADS:-4}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - PLEXTRANSLATOR_USE_LLM=${PLEXTRANSLATOR_USE_LLM:-false}
     volumes:

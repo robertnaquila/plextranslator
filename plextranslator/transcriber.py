@@ -11,9 +11,13 @@ faster-whisper is imported lazily so this module can be imported without it.
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import subprocess
+import tempfile
 from typing import List, Optional
 
-from .subtitles import Cue
+from .subtitles import Cue, parse_srt
 
 logger = logging.getLogger(__name__)
 
@@ -148,3 +152,167 @@ class Transcriber:
             if text:
                 cues.append(Cue(start=seg.start, end=seg.end, text=text))
         return cues
+
+
+def build_whisper_cpp_cmd(
+    binary: str,
+    model_path: str,
+    audio_path: str,
+    out_base: str,
+    *,
+    source_language: Optional[str] = None,
+    threads: int = 0,
+    beam_size: int = 5,
+    extra_args: Optional[List[str]] = None,
+) -> List[str]:
+    """Build a whisper.cpp ``whisper-cli`` command that translates ``audio_path``
+    to English and writes ``<out_base>.srt``.
+
+    ``--translate`` is whisper.cpp's equivalent of Whisper's translate task
+    (output is English regardless of source language). Pure builder for testing.
+    """
+    cmd = [
+        binary,
+        "-m",
+        model_path,
+        "-f",
+        audio_path,
+        "--translate",
+        "--output-srt",
+        "-of",
+        out_base,
+        "-l",
+        source_language or "auto",
+    ]
+    if threads and threads > 0:
+        cmd += ["-t", str(threads)]
+    if beam_size and beam_size > 0:
+        cmd += ["-bs", str(beam_size)]
+    if extra_args:
+        cmd += list(extra_args)
+    return cmd
+
+
+class WhisperCppTranscriber:
+    """Transcriber backend that shells out to the whisper.cpp CLI.
+
+    whisper.cpp runs on CPUs without AVX (build ggml with AVX disabled), which is
+    what makes low-power NAS boxes like the Synology DS1517+ (Atom C2538) viable.
+    It mirrors :class:`Transcriber`'s interface so the pipeline doesn't care which
+    backend is in use.
+    """
+
+    def __init__(
+        self,
+        binary: str = "whisper-cli",
+        model_path: str = "",
+        *,
+        threads: int = 0,
+        extra_args: Optional[List[str]] = None,
+    ) -> None:
+        if not model_path:
+            raise ValueError(
+                "whisper.cpp backend needs a model path "
+                "(PLEXTRANSLATOR_WHISPER_CPP_MODEL or --whisper-cpp-model), e.g. "
+                "/models/ggml-small.bin"
+            )
+        self.binary = binary
+        self.model_path = model_path
+        self.threads = threads
+        self.extra_args = extra_args or []
+
+    def _ensure(self) -> None:
+        if shutil.which(self.binary) is None and not os.path.exists(self.binary):
+            raise RuntimeError(
+                f"whisper.cpp binary not found: {self.binary!r}. Build whisper.cpp "
+                "and point --whisper-cpp-bin at its 'whisper-cli'."
+            )
+        if not os.path.exists(self.model_path):
+            raise RuntimeError(f"whisper.cpp model not found: {self.model_path!r}")
+
+    def translate_audio(
+        self,
+        audio_path: str,
+        *,
+        source_language: Optional[str] = None,
+        time_offset: float = 0.0,
+        beam_size: int = 5,
+    ) -> List[Cue]:
+        self._ensure()
+        tmp_dir = tempfile.mkdtemp(prefix="plextranslator_wcpp_")
+        out_base = os.path.join(tmp_dir, "out")
+        cmd = build_whisper_cpp_cmd(
+            self.binary,
+            self.model_path,
+            audio_path,
+            out_base,
+            source_language=source_language,
+            threads=self.threads,
+            beam_size=beam_size,
+            extra_args=self.extra_args,
+        )
+        try:
+            proc = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    "whisper.cpp failed (exit "
+                    f"{proc.returncode}): "
+                    f"{proc.stderr.decode('utf-8', 'replace')[-1000:]}"
+                )
+            srt_path = out_base + ".srt"
+            if not os.path.exists(srt_path):
+                return []
+            with open(srt_path, "r", encoding="utf-8", errors="replace") as fh:
+                cues = parse_srt(fh.read())
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        if time_offset:
+            cues = [c.shifted(time_offset) for c in cues]
+        return cues
+
+    def translate_samples(
+        self,
+        samples,
+        *,
+        source_language: Optional[str] = None,
+        beam_size: int = 5,
+    ) -> List[Cue]:
+        """Write the in-memory samples to a temp WAV, then translate it."""
+        import wave
+
+        import numpy as np
+
+        int16 = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+        fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="plextranslator_wcpp_")
+        os.close(fd)
+        try:
+            with wave.open(wav_path, "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(16000)
+                wav.writeframes(int16)
+            return self.translate_audio(
+                wav_path, source_language=source_language, beam_size=beam_size
+            )
+        finally:
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+
+
+def make_transcriber(config):
+    """Build the configured transcriber backend (faster-whisper or whisper.cpp)."""
+    if config.backend == "whisper.cpp":
+        return WhisperCppTranscriber(
+            binary=config.whisper_cpp_bin,
+            model_path=config.whisper_cpp_model,
+            threads=config.whisper_cpp_threads,
+        )
+    return Transcriber(
+        model_size=config.whisper_model,
+        device=config.device,
+        compute_type=config.compute_type,
+    )

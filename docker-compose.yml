@@ -1,0 +1,53 @@
+# plextranslator on Synology (Container Manager) or any Docker host.
+#
+# Quick start:
+#   1. cp .env.example .env   and set PLEX_BASEURL + PLEX_TOKEN
+#   2. Edit the media volume below to match YOUR library path.
+#   3. docker compose run --rm plextranslator config   # validate
+#   4. docker compose up plextranslator                # runs `library` by default
+#
+# Why mount media at the SAME path Plex uses: `library` writes the .srt sidecar
+# next to the media file using the path Plex reports (e.g. /volume1/video/...).
+# Mounting it at the identical path means sidecars land in the real location and
+# you need no --path-map. If you must mount elsewhere, set PLEXTRANSLATOR_PATH_MAP
+# (e.g. "/volume1/video=>/media") instead and mount at /media.
+
+services:
+  plextranslator:
+    build:
+      context: .
+      args:
+        EXTRAS: run            # use "run,llm" to enable --use-llm
+        # --- For a non-AVX NAS (DS1517+), use the whisper.cpp backend instead: ---
+        # EXTRAS: whispercpp
+        # WITH_WHISPERCPP: "1"
+        # and set PLEXTRANSLATOR_BACKEND=whisper.cpp +
+        #     PLEXTRANSLATOR_WHISPER_CPP_MODEL=/models/ggml-small.bin in .env
+    image: plextranslator:latest
+    container_name: plextranslator
+    restart: "no"              # batch job; set "unless-stopped" only for web/live
+    environment:
+      - PLEX_BASEURL=${PLEX_BASEURL}
+      - PLEX_TOKEN=${PLEX_TOKEN}
+      - PLEXTRANSLATOR_WHISPER_MODEL=${PLEXTRANSLATOR_WHISPER_MODEL:-small}
+      - PLEXTRANSLATOR_DEVICE=cpu
+      - PLEXTRANSLATOR_BACKEND=${PLEXTRANSLATOR_BACKEND:-faster-whisper}
+      - PLEXTRANSLATOR_WHISPER_CPP_MODEL=${PLEXTRANSLATOR_WHISPER_CPP_MODEL:-}
+      - PLEXTRANSLATOR_WHISPER_CPP_THREADS=${PLEXTRANSLATOR_WHISPER_CPP_THREADS:-4}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - PLEXTRANSLATOR_USE_LLM=${PLEXTRANSLATOR_USE_LLM:-false}
+    volumes:
+      # Media — MUST match the path Plex reports. Change /volume1/video to yours.
+      # Read-write so sidecar .srt files can be written next to the media.
+      - /volume1/video:/volume1/video
+      # Persist downloaded Whisper models between runs.
+      - ./models:/models
+      # Fallback output dir (used when a sidecar can't be written).
+      - ./subtitles_out:/out
+    # Default action: batch-translate KO/JA items missing English subs.
+    command: ["library"]
+    # For the browser overlay instead, comment the command above, set
+    # restart: unless-stopped, publish the port, and use:
+    # command: ["web", "--host", "0.0.0.0", "--port", "8765"]
+    # ports:
+    #   - "8765:8765"

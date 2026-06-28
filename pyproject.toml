@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "plextranslator"
+version = "0.1.0"
+description = "Real-time English subtitles for Korean & Japanese shows on Plex"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "plextranslator contributors" }]
+keywords = ["plex", "subtitles", "whisper", "translation", "korean", "japanese"]
+
+# Heavy runtime deps (faster-whisper, plexapi, anthropic) are optional extras so
+# the package imports and the test-suite runs without a GPU or network.
+dependencies = []
+
+[project.optional-dependencies]
+# Everything needed to actually run against a Plex server.
+run = [
+    "faster-whisper>=1.0.0",
+    "plexapi>=4.15.0",
+    "requests>=2.31.0",
+]
+# whisper.cpp backend (no ctranslate2 / no AVX requirement) — for low-power
+# CPUs like the Synology DS1517+. You also need the whisper.cpp 'whisper-cli'
+# binary and a ggml model; see the README "Synology / NAS deployment".
+whispercpp = [
+    "plexapi>=4.15.0",
+    "requests>=2.31.0",
+    "numpy>=1.24",
+]
+# Optional LLM refinement of Whisper's literal translation.
+llm = [
+    "anthropic>=0.40.0",
+]
+# Development / testing.
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+plextranslator = "plextranslator.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["plextranslator*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

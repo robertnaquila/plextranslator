@@ -174,6 +174,13 @@ def build_parser() -> argparse.ArgumentParser:
     # config (print resolved config / validate)
     sub.add_parser("config", help="Print resolved configuration and validate it.")
 
+    # doctor (preflight checks)
+    p_doc = sub.add_parser(
+        "doctor",
+        help="Preflight: check ffmpeg, backend (whisper-cli/model), Plex connectivity.",
+    )
+    _add_common_plex_args(p_doc)
+
     return parser
 
 
@@ -205,6 +212,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "config":
         return _cmd_config(config)
+    if args.command == "doctor":
+        return _cmd_doctor(config)
     if args.command == "file":
         return _cmd_file(config, args)
     if args.command == "capture":
@@ -276,6 +285,14 @@ def _cmd_live(config: Config) -> int:
     except KeyboardInterrupt:
         print("\nStopped.")
     return 0
+
+
+def _cmd_doctor(config: Config) -> int:
+    from .doctor import exit_code, render, run_doctor
+
+    checks = run_doctor(config)
+    print(render(checks))
+    return exit_code(checks)
 
 
 def _cmd_capture(config: Config, args: argparse.Namespace) -> int:

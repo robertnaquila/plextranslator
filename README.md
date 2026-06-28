@@ -84,6 +84,35 @@ At minimum set `PLEX_BASEURL` and `PLEX_TOKEN`. Check it:
 plextranslator config
 ```
 
+### Preflight check
+
+Before a real run, `doctor` verifies your whole setup — ffmpeg, the selected
+backend (faster-whisper import, or the whisper.cpp binary **and** model file),
+Plex connectivity, optional LLM, config, and a writable output dir:
+
+```bash
+plextranslator doctor
+# whisper.cpp backend on a NAS:
+plextranslator doctor --backend whisper.cpp --whisper-cpp-model /models/ggml-small.bin
+```
+
+Example output:
+
+```
+plextranslator doctor
+  ✓ [ OK ] config             — valid
+  ✓ [ OK ] ffmpeg             — /usr/bin/ffmpeg
+  ✓ [ OK ] whisper.cpp binary — /usr/local/bin/whisper-cli
+  ✓ [ OK ] whisper.cpp model  — /models/ggml-small.bin
+  ✓ [ OK ] Plex connection    — Tower (v1.40), 4 libraries
+  – [SKIP] LLM refinement     — disabled
+  ✓ [ OK ] output dir         — /out (writable)
+
+All checks passed.
+```
+
+It exits non-zero if any check FAILs, so it's safe to gate a scheduled job on it.
+
 > The CLI reads environment variables; load your `.env` however you like
 > (e.g. `set -a; . ./.env; set +a`).
 
@@ -287,7 +316,8 @@ cp .env.example .env          # set PLEX_BASEURL + PLEX_TOKEN
 # Edit docker-compose.yml: point the media volume at YOUR library path,
 # mounted at the SAME path Plex uses (so sidecars land next to the media).
 
-docker compose run --rm plextranslator config   # validate
+docker compose run --rm plextranslator config   # validate config
+docker compose run --rm plextranslator doctor   # preflight: ffmpeg/backend/Plex
 docker compose up plextranslator                 # runs `library` (batch)
 ```
 
@@ -347,6 +377,7 @@ plextranslator/
   web.py           # browser overlay server (SSE) synced to Plex playback
   capture.py       # live system-audio capture (Netflix & any streaming)
   dedupe.py        # overlap de-duplication / smoothing for rolling captions
+  doctor.py        # `doctor` preflight checks (ffmpeg, backend, model, Plex)
   cli.py           # argparse entrypoint
 Dockerfile          # container (ffmpeg + plextranslator)
 docker-compose.yml  # Synology / Docker deployment (batch or web)

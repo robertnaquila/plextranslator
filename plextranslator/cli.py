@@ -111,6 +111,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--source-language", dest="source_language",
         help="Force source language (ko/ja); default: auto-detect.",
     )
+    p_cap.add_argument(
+        "--no-dedupe", dest="dedupe", action="store_false",
+        help="Disable overlap de-duplication (show each window verbatim).",
+    )
 
     # library
     p_lib = sub.add_parser("library", help="Batch-subtitle the KO/JA library.")
@@ -258,6 +262,7 @@ def _cmd_capture(config: Config, args: argparse.Namespace) -> int:
             window_seconds=args.window_seconds,
             overlap_seconds=args.overlap_seconds,
             source_language=args.source_language,
+            dedupe=args.dedupe,
         )
     except KeyboardInterrupt:
         pass

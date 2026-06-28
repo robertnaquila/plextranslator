@@ -24,6 +24,7 @@ import threading
 from typing import List, Optional
 
 from .config import Config
+from .dedupe import CaptionAccumulator
 from .subtitles import Cue
 from .transcriber import Transcriber
 from .translator import Refiner
@@ -104,6 +105,7 @@ class AudioCaptureEngine(_StoppableThread):
         overlap_seconds: float = 0.5,
         source_language: Optional[str] = None,
         title: str = "Live captions (system audio)",
+        dedupe: bool = True,
         transcriber: Optional[Transcriber] = None,
     ) -> None:
         super().__init__(name="plextranslator-capture")
@@ -115,6 +117,7 @@ class AudioCaptureEngine(_StoppableThread):
         self.overlap_seconds = overlap_seconds
         self.source_language = source_language
         self.title = title
+        self.accumulator = CaptionAccumulator() if dedupe else None
         self.transcriber = transcriber or Transcriber(
             model_size=config.whisper_model,
             device=config.device,
@@ -181,8 +184,10 @@ class AudioCaptureEngine(_StoppableThread):
                 text = self.refiner.refine([Cue(0, 1, text)])[0].text
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Refinement skipped: %s", exc)
+        # Merge with prior windows so overlapping boundary words don't repeat.
+        caption = self.accumulator.add(text) if self.accumulator is not None else text
         # Hold the caption a bit past the next window so it doesn't flicker to blank.
-        self.store.set_live_caption(text, hold_seconds=self.window_seconds + 2.0)
+        self.store.set_live_caption(caption, hold_seconds=self.window_seconds + 2.0)
 
 
 def run_capture(
@@ -195,6 +200,7 @@ def run_capture(
     window_seconds: float = 6.0,
     overlap_seconds: float = 0.5,
     source_language: Optional[str] = None,
+    dedupe: bool = True,
 ) -> None:
     """Start audio capture + the web overlay server. Serves until interrupted."""
     from .web import make_server
@@ -212,6 +218,7 @@ def run_capture(
         window_seconds=window_seconds,
         overlap_seconds=overlap_seconds,
         source_language=source_language,
+        dedupe=dedupe,
     )
     engine.start()
     server = make_server(store, host, port)

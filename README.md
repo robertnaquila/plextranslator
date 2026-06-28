@@ -167,6 +167,13 @@ This needs no Plex and works for **any** app that plays audio.
 Tuning: `--window-seconds` trades latency for accuracy (smaller = snappier but
 choppier); `--overlap-seconds` keeps words from being clipped at window edges.
 
+Captions are **de-duplicated and smoothed**: because consecutive windows overlap,
+their translations repeat boundary words (window A ends "…running away", window B
+starts "away from us"). plextranslator merges windows into one continuous
+transcript — stripping each new window's overlapping prefix — and shows the last
+sentence or two, so captions read smoothly instead of stuttering. Pass
+`--no-dedupe` to show each window verbatim (useful for debugging).
+
 > Because each window is transcribed independently, capture mode is best on a
 > faster model (`medium`/`large-v3` on a GPU). On CPU, try `--model small` and a
 > larger `--window-seconds`.
@@ -244,6 +251,7 @@ plextranslator/
   live.py          # live/follow-the-playhead mode
   web.py           # browser overlay server (SSE) synced to Plex playback
   capture.py       # live system-audio capture (Netflix & any streaming)
+  dedupe.py        # overlap de-duplication / smoothing for rolling captions
   cli.py           # argparse entrypoint
 ```
 

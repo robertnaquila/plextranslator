@@ -61,6 +61,21 @@ def is_target_language(code: Optional[str]) -> bool:
     return normalize_lang(code) in TARGET_LANGUAGES
 
 
+def streams_of_type(part, stream_type: int, method_name: str) -> list:
+    """Return a media part's streams of a given type, across plexapi versions.
+
+    plexapi exposes ``part.audioStreams()`` / ``part.subtitleStreams()`` (methods);
+    ``part.streams`` is a plain list attribute (calling it raised
+    'list object is not callable'). Prefer the typed method, fall back to
+    filtering the ``.streams`` list by ``streamType`` (audio=2, subtitle=3).
+    """
+    method = getattr(part, method_name, None)
+    if callable(method):
+        return list(method())
+    streams = getattr(part, "streams", None) or []
+    return [s for s in streams if getattr(s, "streamType", None) == stream_type]
+
+
 def pick_target_audio_index(stream_languages: List[Optional[str]]) -> Optional[int]:
     """Given the ordered language codes of a media's audio streams, return the
     index of the first Korean/Japanese track, or None if none match.
@@ -158,8 +173,8 @@ class PlexClient:
             part = video.media[0].parts[0]
         except (IndexError, AttributeError):
             return None
-        audio_streams = [s for s in part.streams() if s.streamType == 2]
-        sub_streams = [s for s in part.streams() if s.streamType == 3]
+        audio_streams = streams_of_type(part, 2, "audioStreams")
+        sub_streams = streams_of_type(part, 3, "subtitleStreams")
         audio_langs = [normalize_lang(getattr(s, "languageCode", "")) for s in audio_streams]
         has_en_subs = any(
             normalize_lang(getattr(s, "languageCode", "")) in {"en", "eng"}
@@ -184,7 +199,7 @@ class PlexClient:
                 part = session.media[0].parts[0]
             except (IndexError, AttributeError):
                 continue
-            audio_streams = [s for s in part.streams() if s.streamType == 2]
+            audio_streams = streams_of_type(part, 2, "audioStreams")
             audio_langs = [
                 normalize_lang(getattr(s, "languageCode", "")) for s in audio_streams
             ]

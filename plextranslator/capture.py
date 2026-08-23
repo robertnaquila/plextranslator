@@ -345,10 +345,12 @@ class AudioCaptureEngine(_StoppableThread):
         # so captions get replaced instead of flickering to blank in between.
         elapsed = time.monotonic() - started
         self._last_hold = min(45.0, self.window_seconds + elapsed + 4.0)
+        # Bump the sequence BEFORE displaying, so an in-flight refinement of the
+        # previous window can no longer overwrite this fresh caption.
+        self._refine_seq += 1
         # Show the raw translation immediately; refinement swaps it in later.
         self.store.set_live_caption(caption, hold_seconds=self._last_hold)
         if self._refine_worker is not None:
-            self._refine_seq += 1
             self._refine_worker.submit((self._refine_seq, caption))
 
 

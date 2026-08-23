@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass
@@ -182,23 +183,29 @@ class SubtitleTracker:
 
 
 class TranslationCache:
-    """Tiny LRU so repeated lines (recaps, repeated phrases) translate once."""
+    """Tiny LRU so repeated lines (recaps, repeated phrases) translate once.
+
+    Locked: the engine thread reads while the translation worker writes.
+    """
 
     def __init__(self, maxsize: int = 500) -> None:
         self.maxsize = maxsize
         self._data: "OrderedDict[str, str]" = OrderedDict()
+        self._lock = threading.Lock()
 
     def get(self, key: str) -> Optional[str]:
-        if key not in self._data:
-            return None
-        self._data.move_to_end(key)
-        return self._data[key]
+        with self._lock:
+            if key not in self._data:
+                return None
+            self._data.move_to_end(key)
+            return self._data[key]
 
     def put(self, key: str, value: str) -> None:
-        self._data[key] = value
-        self._data.move_to_end(key)
-        while len(self._data) > self.maxsize:
-            self._data.popitem(last=False)
+        with self._lock:
+            self._data[key] = value
+            self._data.move_to_end(key)
+            while len(self._data) > self.maxsize:
+                self._data.popitem(last=False)
 
 
 # -- translation -----------------------------------------------------------
@@ -262,9 +269,14 @@ class LlmTranslator:
             system=self._system_prompt(),
             messages=messages,
         )
-        translated = response.content[0].text.strip()
-        self._context.append((text, translated))
-        return translated
+        # Take the first text block (thinking-enabled models may lead with
+        # non-text blocks that have no .text attribute).
+        translated = next(
+            (b.text for b in response.content if getattr(b, "text", None)), ""
+        ).strip()
+        if translated:
+            self._context.append((text, translated))
+        return translated or text
 
 
 # -- screen capture --------------------------------------------------------
@@ -353,14 +365,22 @@ class WindowsOcrBackend:
             ) from exc
         self._engine = OcrEngine.try_create_from_language(Language(language))
         if self._engine is None:
-            available = ", ".join(
-                lang.language_tag for lang in OcrEngine.get_available_recognizer_languages()
-            )
+            # available_recognizer_languages is a STATIC property on the class.
+            try:
+                languages = OcrEngine.available_recognizer_languages
+                available = ", ".join(lang.language_tag for lang in languages)
+            except Exception:  # noqa: BLE001 - the error message matters more
+                available = "unknown"
             raise RuntimeError(
                 f"Windows has no OCR support installed for {language!r} "
                 f"(available: {available or 'none'}). Install the language pack: "
                 "Settings > Time & Language > Language & region > Add a language."
             )
+        # max_image_dimension is also a static property on the OcrEngine class.
+        try:
+            self._max_dim = int(OcrEngine.max_image_dimension)
+        except Exception:  # noqa: BLE001 - degrade to "no limit check"
+            self._max_dim = 0
         self.language = language
 
     def recognize(self, bgra: bytes, width: int, height: int) -> str:
@@ -369,11 +389,10 @@ class WindowsOcrBackend:
         from winsdk.windows.graphics.imaging import BitmapPixelFormat, SoftwareBitmap
         from winsdk.windows.storage.streams import DataWriter
 
-        max_dim = getattr(self._engine, "max_image_dimension", 0) or 0
-        if max_dim and max(width, height) > max_dim:
+        if self._max_dim and max(width, height) > self._max_dim:
             raise RuntimeError(
                 f"Region {width}x{height} exceeds Windows OCR's max dimension "
-                f"({max_dim}px) - use a smaller --region."
+                f"({self._max_dim}px) - use a smaller --region."
             )
         writer = DataWriter()
         writer.write_bytes(bgra)
@@ -532,7 +551,10 @@ class OcrCaptionEngine(_StoppableThread):
         try:
             while not self.stopped:
                 started = time.monotonic()
-                self._step()
+                try:
+                    self._step()
+                except Exception:  # noqa: BLE001 - never let one frame kill the loop
+                    logger.exception("OCR step failed")
                 delay = self.interval - (time.monotonic() - started)
                 if delay > 0:
                     time.sleep(min(delay, 0.5))

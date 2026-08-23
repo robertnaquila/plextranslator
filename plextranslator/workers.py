@@ -43,7 +43,9 @@ class LatestOnlyWorker(threading.Thread):
             item, has = self._item, self._has_item
             self._item = None
             self._has_item = False
-            if not has:
+            # Never clear after stop() has set the event, or its wakeup would be
+            # swallowed and run() would park in wait() forever.
+            if not has and not self._stopped:
                 self._wake.clear()
         if not has:
             return False

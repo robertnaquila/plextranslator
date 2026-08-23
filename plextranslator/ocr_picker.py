@@ -22,6 +22,23 @@ def pick_region() -> Optional[Region]:
             "instead (or 'bottom')."
         ) from exc
 
+    # On Windows with display scaling (125%/150%), tkinter reports logical
+    # pixels while mss captures physical ones — the selected box would land in
+    # the wrong place. Making the process DPI-aware puts tkinter in physical
+    # pixels too, matching mss.
+    import sys
+
+    if sys.platform == "win32":  # pragma: no cover - Windows only
+        try:
+            import ctypes
+
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            except Exception:  # noqa: BLE001 - older Windows
+                ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:  # noqa: BLE001 - best effort
+            pass
+
     result = {}
     root = tk.Tk()
     root.attributes("-fullscreen", True)

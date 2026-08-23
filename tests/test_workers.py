@@ -23,6 +23,13 @@ def test_drain_survives_task_errors():
     assert worker._drain_once() is False
 
 
+def test_drain_never_swallows_stop_wakeup():
+    worker = LatestOnlyWorker(lambda item: None)
+    worker.stop()  # sets the wake event
+    worker._drain_once()  # empty drain must NOT clear it after stop
+    assert worker._wake.is_set()
+
+
 def test_running_worker_processes_and_stops():
     done = threading.Event()
     seen = []

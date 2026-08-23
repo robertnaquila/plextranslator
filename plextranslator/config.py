@@ -7,6 +7,42 @@ from dataclasses import dataclass, replace
 from typing import Optional
 
 
+def load_dotenv(path: str = ".env", *, override: bool = False) -> dict:
+    """Load ``KEY=VALUE`` lines from a .env file into ``os.environ``.
+
+    Real environment variables win by default, so an explicitly exported value
+    still beats the file. Returns the keys that were applied. No dependency on
+    python-dotenv; unparsable lines are skipped rather than raising.
+
+    Without this, ``plextranslator ...`` run directly ignored the .env file the
+    README tells you to create (only the PowerShell wrappers loaded it), so
+    ANTHROPIC_API_KEY appeared unset.
+    """
+    applied = {}
+    try:
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return applied
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        if not key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if override or key not in os.environ:
+            os.environ[key] = value
+            applied[key] = value
+    return applied
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None:

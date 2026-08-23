@@ -362,3 +362,58 @@ def test_tesseract_backend_errors_without_binary(monkeypatch):
     monkeypatch.setattr(ocr_mod, "find_tesseract_binary", lambda: None)
     with pytest.raises(RuntimeError, match="--tesseract-cmd"):
         ocr_mod.TesseractOcrBackend("kor")
+
+
+# -- preprocessing ---------------------------------------------------------
+
+
+def _pixels(img):
+    """Pillow renamed getdata() -> get_flattened_data(); support both."""
+    getter = getattr(img, "get_flattened_data", None) or img.getdata
+    return list(getter())
+
+
+def _solid_bgra(width, height, b, g, r):
+    return bytes([b, g, r, 255]) * (width * height)
+
+
+def test_preprocess_upscales_and_binarizes():
+    pytest.importorskip("PIL")
+    from plextranslator.ocr import preprocess_for_ocr
+
+    # bright pixels (subtitle text) -> black after invert; image is upscaled
+    img = preprocess_for_ocr(_solid_bgra(4, 3, 255, 255, 255), 4, 3, scale=2)
+    assert img.size == (8, 6)
+    assert set(_pixels(img)) == {0}
+
+
+def test_preprocess_dark_background_becomes_white():
+    pytest.importorskip("PIL")
+    from plextranslator.ocr import preprocess_for_ocr
+
+    img = preprocess_for_ocr(_solid_bgra(4, 3, 0, 0, 0), 4, 3, scale=1)
+    assert img.size == (4, 3)
+    assert set(_pixels(img)) == {255}
+
+
+def test_preprocess_output_is_only_black_and_white():
+    pytest.importorskip("PIL")
+    from plextranslator.ocr import preprocess_for_ocr
+
+    mixed = bytes()
+    for i in range(12):
+        v = (i * 20) % 256
+        mixed += bytes([v, v, v, 255])
+    img = preprocess_for_ocr(mixed, 4, 3, scale=2)
+    assert set(_pixels(img)) <= {0, 255}
+
+
+def test_save_frame_writes_both_images(tmp_path, capsys):
+    pytest.importorskip("PIL")
+    from plextranslator.ocr import save_frame
+
+    out = tmp_path / "frame.png"
+    save_frame(_solid_bgra(4, 3, 10, 20, 30), 4, 3, str(out))
+    assert out.exists()
+    assert (tmp_path / "frame.ocr.png").exists()
+    assert "Saved raw frame" in capsys.readouterr().out

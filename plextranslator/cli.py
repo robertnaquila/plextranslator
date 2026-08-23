@@ -7,7 +7,7 @@ import sys
 from typing import List, Optional
 
 from . import __version__
-from .config import Config
+from .config import Config, load_dotenv
 from .logging_conf import configure_logging
 
 
@@ -207,6 +207,16 @@ def build_parser() -> argparse.ArgumentParser:
         r"'C:\Program Files\Tesseract-OCR\tesseract.exe').",
     )
     p_ocr.add_argument(
+        "--psm", type=int, default=6,
+        help="Tesseract page-segmentation mode: 6 = block (default), "
+        "7 = single line (best for a tight subtitle strip), 11 = sparse text.",
+    )
+    p_ocr.add_argument(
+        "--save-frame", dest="save_frame", metavar="PATH",
+        help="With --probe: save the captured region (and the preprocessed "
+        "image the OCR actually sees) to PATH for debugging.",
+    )
+    p_ocr.add_argument(
         "--anthropic-model", dest="anthropic_model",
         help="Claude model used for translation.",
     )
@@ -257,6 +267,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _config_from_args(args: argparse.Namespace) -> Config:
+    # Pick up a .env in the working directory (real env vars still win) so keys
+    # work the same whether you use the wrapper scripts or run the CLI directly.
+    load_dotenv()
     return Config.from_env().merge(
         plex_baseurl=getattr(args, "plex_baseurl", None),
         plex_token=getattr(args, "plex_token", None),
@@ -400,6 +413,8 @@ def _cmd_ocr(config: Config, args: argparse.Namespace) -> int:
             stable_frames=args.stable_frames,
             probe=args.probe,
             tesseract_cmd=args.tesseract_cmd,
+            psm=args.psm,
+            save_frame_path=args.save_frame,
         )
     except KeyboardInterrupt:
         pass

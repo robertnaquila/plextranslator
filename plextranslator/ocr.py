@@ -410,6 +410,44 @@ class WindowsOcrBackend:
         return (result.text or "").strip()
 
 
+def preprocess_for_ocr(bgra: bytes, width: int, height: int, scale: int = 2):
+    """Turn a raw BGRA screen grab into a high-contrast image Tesseract can read.
+
+    Subtitles are light text over arbitrary video, at screen resolution — which
+    Tesseract handles poorly (it wants ~300 DPI, dark-on-light text). Upscaling
+    and binarizing makes the difference between usable text and noise:
+
+    1. BGRA -> grayscale
+    2. upscale (Tesseract is much more accurate on larger glyphs)
+    3. autocontrast, then threshold to pure black/white
+    4. invert so the text is dark on white
+    """
+    from PIL import Image, ImageOps
+
+    # The canonical mss->PIL recipe: BGRA raw bytes, ignore alpha.
+    image = Image.frombytes("RGB", (width, height), bgra, "raw", "BGRX")
+    gray = image.convert("L")
+    if scale > 1:
+        gray = gray.resize((width * scale, height * scale), Image.LANCZOS)
+    gray = ImageOps.autocontrast(gray)
+    # Subtitle glyphs are the brightest thing in the band; keep only those.
+    binary = gray.point(lambda p: 255 if p > 180 else 0, mode="L")
+    return ImageOps.invert(binary)
+
+
+def save_frame(bgra: bytes, width: int, height: int, path: str) -> None:
+    """Write the raw grab and the preprocessed image next to it, for debugging
+    what the OCR engine is actually being shown."""
+    from PIL import Image
+
+    Image.frombytes("RGB", (width, height), bgra, "raw", "BGRX").save(path)
+    root, _, ext = path.rpartition(".")
+    processed_path = f"{root}.ocr.{ext}" if root else path + ".ocr.png"
+    preprocess_for_ocr(bgra, width, height).save(processed_path)
+    print(f"Saved raw frame to {path}")
+    print(f"Saved preprocessed (what OCR sees) to {processed_path}")
+
+
 def find_tesseract_binary() -> Optional[str]:
     """Locate ``tesseract`` on PATH, or at the usual Windows install locations.
 
@@ -437,7 +475,12 @@ def find_tesseract_binary() -> Optional[str]:
 class TesseractOcrBackend:
     """OCR via pytesseract + the Tesseract binary (cross-platform fallback)."""
 
-    def __init__(self, language: str = "kor", tesseract_cmd: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        language: str = "kor",
+        tesseract_cmd: Optional[str] = None,
+        psm: int = 6,
+    ) -> None:
         try:
             import pytesseract
             from PIL import Image  # noqa: F401 - verify Pillow is present too
@@ -462,6 +505,9 @@ class TesseractOcrBackend:
         self._pytesseract = pytesseract
         self.binary = binary
         self.language = language
+        # psm 6 = "one uniform block"; 7 = "one line" (better for a tight,
+        # single-line subtitle region); 11/12 = sparse text.
+        self.config = f"--psm {psm}"
 
     @staticmethod
     def _verify_language(pytesseract, binary: str, language: str) -> None:
@@ -480,19 +526,18 @@ class TesseractOcrBackend:
             )
 
     def recognize(self, bgra: bytes, width: int, height: int) -> str:
-        from PIL import Image, ImageOps
-
-        # The canonical mss->PIL recipe: BGRA raw bytes, ignore alpha.
-        image = Image.frombytes("RGB", (width, height), bgra, "raw", "BGRX")
-        gray = ImageOps.autocontrast(image.convert("L"))
+        image = preprocess_for_ocr(bgra, width, height)
         text = self._pytesseract.image_to_string(
-            gray, lang=self.language, config="--psm 6"
+            image, lang=self.language, config=self.config
         )
         return (text or "").strip()
 
 
 def make_ocr_backend(
-    name: str, source_language: str = "ko", tesseract_cmd: Optional[str] = None
+    name: str,
+    source_language: str = "ko",
+    tesseract_cmd: Optional[str] = None,
+    psm: int = 6,
 ):
     """Build the requested OCR backend; ``auto`` prefers Windows OCR on Windows
     and falls back to Tesseract, raising a combined message if neither works."""
@@ -507,7 +552,9 @@ def make_ocr_backend(
             errors.append(f"windows: {exc}")
     if name in ("auto", "tesseract"):
         try:
-            return TesseractOcrBackend(tesseract_lang, tesseract_cmd=tesseract_cmd)
+            return TesseractOcrBackend(
+                tesseract_lang, tesseract_cmd=tesseract_cmd, psm=psm
+            )
         except RuntimeError as exc:
             if name == "tesseract":
                 raise
@@ -633,13 +680,17 @@ def run_ocr(
     hold_seconds: float = 45.0,
     probe: bool = False,
     tesseract_cmd: Optional[str] = None,
+    psm: int = 6,
+    save_frame_path: Optional[str] = None,
 ) -> None:
     """Start screen-OCR subtitles + the web overlay server (or a one-shot probe)."""
     from .web import make_server
 
     size = screen_size(monitor_index)
     region = parse_region(region_spec, size)
-    ocr = make_ocr_backend(backend, source_language, tesseract_cmd=tesseract_cmd)
+    ocr = make_ocr_backend(
+        backend, source_language, tesseract_cmd=tesseract_cmd, psm=psm
+    )
 
     translator: Optional[LlmTranslator] = None
     if config.anthropic_api_key:
@@ -661,6 +712,14 @@ def run_ocr(
         print(f"Monitor {monitor_index}: {size[0]}x{size[1]}")
         print(f"Region: {region.left},{region.top},{region.width},{region.height}")
         print(f"OCR text: {text!r}")
+        if save_frame_path:
+            save_frame(bgra, width, height, save_frame_path)
+        if text and not matches_script(text, source_language):
+            print(
+                "\nNOTE: none of that text is in the source language's script, so "
+                "it would be filtered out as noise. Narrow the region to just the "
+                "subtitle band (try --select-region)."
+            )
         if text and translator is not None:
             print(f"Translation: {translator.translate(text)}")
         return

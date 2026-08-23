@@ -274,7 +274,15 @@ audio routing, and almost no CPU load**. Whisper/ffmpeg aren't involved at all.
   bottom:40`, exact pixels `--region "0,780,1920,300"`, or drag it on screen
   with `--select-region` (prints the coordinates for reuse).
 - **Test it**: `plextranslator ocr --probe` grabs the region once and prints
-  what it read — run it while a subtitle is on screen.
+  what it read — run it while a subtitle is on screen. Add
+  `--save-frame frame.png` to also write the captured region *and* the
+  preprocessed black-and-white image the OCR engine actually sees; opening
+  those two files tells you instantly whether the region is wrong or the
+  contrast is.
+- **If the probe returns gibberish**, the region is almost always too wide —
+  the full-width default includes video imagery and UI that Tesseract tries to
+  read as text. Narrow it to just the subtitle band with `--select-region`.
+  On a tight single-line strip, `--psm 7` beats the default `--psm 6`.
 - **OCR engines** (`--ocr-backend`): `windows` uses the OCR built into
   Windows 10/11 (`pip install winsdk`, plus the language pack: Settings → Time &
   Language → Language & region → Add a language → 한국어); `tesseract` works
@@ -303,6 +311,8 @@ pip install -e ".[run,llm,monitor,ocr]"
 # put your Claude key in a .env file in the repo root:
 #   ANTHROPIC_API_KEY=sk-ant-...
 ```
+A `.env` in the working directory is loaded automatically by every command
+(real environment variables still take precedence).
 Then edit the `settings` block at the top of either `.ps1` (capture device /
 screen region, model choice).
 

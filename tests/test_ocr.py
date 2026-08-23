@@ -315,7 +315,9 @@ def test_run_ocr_probe_smoke(monkeypatch, capsys):
 
     monkeypatch.setattr(ocr_mod, "screen_size", lambda idx=1: SCREEN)
     monkeypatch.setattr(
-        ocr_mod, "make_ocr_backend", lambda name, lang: _ScriptedOcr(["안녕하세요"])
+        ocr_mod,
+        "make_ocr_backend",
+        lambda name, lang, **kw: _ScriptedOcr(["안녕하세요"]),
     )
     monkeypatch.setattr(ocr_mod, "ScreenGrabber", lambda idx=1: _FakeGrabber())
 
@@ -324,3 +326,39 @@ def test_run_ocr_probe_smoke(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "안녕하세요" in out
     assert "1920x1080" in out
+
+
+# -- Tesseract binary discovery -------------------------------------------
+
+
+def test_find_tesseract_prefers_path(monkeypatch):
+    import plextranslator.ocr as ocr_mod
+
+    monkeypatch.setattr(ocr_mod.shutil, "which", lambda name: "/usr/bin/tesseract")
+    assert ocr_mod.find_tesseract_binary() == "/usr/bin/tesseract"
+
+
+def test_find_tesseract_checks_windows_install_dir(monkeypatch):
+    import plextranslator.ocr as ocr_mod
+
+    win_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    monkeypatch.setattr(ocr_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ocr_mod.os.path, "isfile", lambda p: p == win_path)
+    assert ocr_mod.find_tesseract_binary() == win_path
+
+
+def test_find_tesseract_returns_none_when_absent(monkeypatch):
+    import plextranslator.ocr as ocr_mod
+
+    monkeypatch.setattr(ocr_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ocr_mod.os.path, "isfile", lambda p: False)
+    assert ocr_mod.find_tesseract_binary() is None
+
+
+def test_tesseract_backend_errors_without_binary(monkeypatch):
+    import plextranslator.ocr as ocr_mod
+
+    pytest.importorskip("pytesseract")
+    monkeypatch.setattr(ocr_mod, "find_tesseract_binary", lambda: None)
+    with pytest.raises(RuntimeError, match="--tesseract-cmd"):
+        ocr_mod.TesseractOcrBackend("kor")

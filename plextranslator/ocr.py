@@ -32,6 +32,8 @@ script filter (Hangul/kana required for ko/ja) also guards against that.
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import sys
 import threading
 import time
@@ -408,10 +410,34 @@ class WindowsOcrBackend:
         return (result.text or "").strip()
 
 
+def find_tesseract_binary() -> Optional[str]:
+    """Locate ``tesseract`` on PATH, or at the usual Windows install locations.
+
+    The Windows installer does not add itself to PATH, so pytesseract fails to
+    find it even when Tesseract is correctly installed. Checking the standard
+    paths saves everyone a ``--tesseract-cmd`` flag.
+    """
+    found = shutil.which("tesseract")
+    if found:
+        return found
+    candidates = [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+        os.path.expandvars(r"%USERPROFILE%\AppData\Local\Tesseract-OCR\tesseract.exe"),
+        "/opt/homebrew/bin/tesseract",
+        "/usr/local/bin/tesseract",
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 class TesseractOcrBackend:
     """OCR via pytesseract + the Tesseract binary (cross-platform fallback)."""
 
-    def __init__(self, language: str = "kor") -> None:
+    def __init__(self, language: str = "kor", tesseract_cmd: Optional[str] = None) -> None:
         try:
             import pytesseract
             from PIL import Image  # noqa: F401 - verify Pillow is present too
@@ -421,8 +447,37 @@ class TesseractOcrBackend:
                 "needs them. Run: pip install pytesseract Pillow (and install "
                 "the Tesseract binary + language data, e.g. 'kor')."
             ) from exc
+        binary = tesseract_cmd or find_tesseract_binary()
+        if not binary:
+            raise RuntimeError(
+                "The Tesseract binary was not found. Install it (Windows: "
+                "`winget install UB-Mannheim.TesseractOCR`, including the Korean "
+                "language data) and, if it is not on PATH, pass its full path "
+                r"with --tesseract-cmd 'C:\Program Files\Tesseract-OCR\tesseract.exe'."
+            )
+        if tesseract_cmd and not os.path.isfile(tesseract_cmd):
+            raise RuntimeError(f"--tesseract-cmd path does not exist: {tesseract_cmd!r}")
+        pytesseract.pytesseract.tesseract_cmd = binary
+        self._verify_language(pytesseract, binary, language)
         self._pytesseract = pytesseract
+        self.binary = binary
         self.language = language
+
+    @staticmethod
+    def _verify_language(pytesseract, binary: str, language: str) -> None:
+        """Fail early with a clear message if the language data is missing."""
+        try:
+            available = set(pytesseract.get_languages(config=""))
+        except Exception as exc:  # noqa: BLE001 - can't list; let OCR try anyway
+            logger.debug("Could not list Tesseract languages: %s", exc)
+            return
+        if language not in available:
+            raise RuntimeError(
+                f"Tesseract has no {language!r} language data installed "
+                f"(has: {', '.join(sorted(available)) or 'none'}). Re-run the "
+                f"installer and tick the language, or drop {language}.traineddata "
+                "into the tessdata folder next to " + binary + "."
+            )
 
     def recognize(self, bgra: bytes, width: int, height: int) -> str:
         from PIL import Image, ImageOps
@@ -436,7 +491,9 @@ class TesseractOcrBackend:
         return (text or "").strip()
 
 
-def make_ocr_backend(name: str, source_language: str = "ko"):
+def make_ocr_backend(
+    name: str, source_language: str = "ko", tesseract_cmd: Optional[str] = None
+):
     """Build the requested OCR backend; ``auto`` prefers Windows OCR on Windows
     and falls back to Tesseract, raising a combined message if neither works."""
     tesseract_lang = _TESSERACT_LANGS.get(source_language, source_language)
@@ -450,7 +507,7 @@ def make_ocr_backend(name: str, source_language: str = "ko"):
             errors.append(f"windows: {exc}")
     if name in ("auto", "tesseract"):
         try:
-            return TesseractOcrBackend(tesseract_lang)
+            return TesseractOcrBackend(tesseract_lang, tesseract_cmd=tesseract_cmd)
         except RuntimeError as exc:
             if name == "tesseract":
                 raise
@@ -575,13 +632,14 @@ def run_ocr(
     stable_frames: int = 2,
     hold_seconds: float = 45.0,
     probe: bool = False,
+    tesseract_cmd: Optional[str] = None,
 ) -> None:
     """Start screen-OCR subtitles + the web overlay server (or a one-shot probe)."""
     from .web import make_server
 
     size = screen_size(monitor_index)
     region = parse_region(region_spec, size)
-    ocr = make_ocr_backend(backend, source_language)
+    ocr = make_ocr_backend(backend, source_language, tesseract_cmd=tesseract_cmd)
 
     translator: Optional[LlmTranslator] = None
     if config.anthropic_api_key:

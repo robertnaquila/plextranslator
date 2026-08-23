@@ -202,6 +202,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Grab + OCR the region once, print what was read, and exit.",
     )
     p_ocr.add_argument(
+        "--tesseract-cmd", dest="tesseract_cmd",
+        help=r"Full path to tesseract.exe when it isn't on PATH (e.g. "
+        r"'C:\Program Files\Tesseract-OCR\tesseract.exe').",
+    )
+    p_ocr.add_argument(
         "--anthropic-model", dest="anthropic_model",
         help="Claude model used for translation.",
     )
@@ -394,6 +399,7 @@ def _cmd_ocr(config: Config, args: argparse.Namespace) -> int:
             monitor_index=args.monitor_index,
             stable_frames=args.stable_frames,
             probe=args.probe,
+            tesseract_cmd=args.tesseract_cmd,
         )
     except KeyboardInterrupt:
         pass

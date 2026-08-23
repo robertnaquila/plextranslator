@@ -33,6 +33,11 @@ $StableFrames   = 2                          # frames a line must persist (1 = f
 # For maximum translation quality use "claude-opus-4-8" (a beat slower per line).
 $AnthropicModel = "claude-haiku-4-5-20251001"
 $Port           = 8765
+# OCR engine: "auto" (Windows built-in, else Tesseract), "windows", "tesseract".
+$OcrBackend     = "auto"
+# Only needed for Tesseract when it isn't on PATH (the Windows installer doesn't
+# add it). Leave "" to auto-detect the usual install locations.
+$TesseractCmd   = ""
 # ====================================================================
 
 # Move to the repo root (parent of this script's folder) so .env is found.
@@ -71,10 +76,15 @@ Start-Process "http://127.0.0.1:$Port/"
 
 Write-Host "Korean screen-OCR subtitles starting (region=$Region, model=$AnthropicModel)..." -ForegroundColor Green
 Write-Host "Overlay: http://127.0.0.1:$Port/  -- keep it OUTSIDE the watched region. Ctrl+C to stop." -ForegroundColor Green
-python -m plextranslator ocr `
-    --source-language $Lang `
-    --region $Region `
-    --interval $Interval `
-    --stable-frames $StableFrames `
-    --anthropic-model $AnthropicModel `
-    --port $Port
+$ocrArgs = @(
+    "-m", "plextranslator", "ocr",
+    "--source-language", $Lang,
+    "--region", $Region,
+    "--interval", $Interval,
+    "--stable-frames", $StableFrames,
+    "--anthropic-model", $AnthropicModel,
+    "--ocr-backend", $OcrBackend,
+    "--port", $Port
+)
+if ($TesseractCmd -ne "") { $ocrArgs += @("--tesseract-cmd", $TesseractCmd) }
+python @ocrArgs

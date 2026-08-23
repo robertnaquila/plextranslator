@@ -24,15 +24,18 @@
 #
 # IMPORTANT: keep the caption overlay browser window OUTSIDE the watched region
 # (e.g. above the video, or on another monitor) so the OCR never reads it.
+#
+# Every run asks whether to keep the last-used subtitle region or pick a new
+# one on screen (video windows move/resize between shows). Press Enter to keep
+# it, or 'r' to redraw the box. Whichever you use gets remembered for next time.
 
 $ErrorActionPreference = "Stop"
 
 # ============================= settings =============================
 $Lang           = "ko"                       # language of the burned-in subs
-# Exact pixels "left,top,width,height" around JUST the subtitle text — a tight
-# region is far more accurate than the "bottom"/"bottom:N" percentage presets.
-# Find yours interactively (drag a box over the subtitle band):
-#   python -m plextranslator ocr --select-region
+# Fallback region (pixels "left,top,width,height") used only the very first
+# time this script runs, before anything is cached. After that, the region
+# prompt below (and its saved cache) takes over.
 $Region         = "7,837,947,186"
 $Interval       = 0.4                        # seconds between screen checks
 $StableFrames   = 3                          # frames a line must persist (fewer
@@ -70,6 +73,19 @@ if (-not $env:ANTHROPIC_API_KEY) {
     Write-Host "         Captions will show the ORIGINAL Korean, untranslated." -ForegroundColor Yellow
 }
 
+# Region cache: remembers the last region used (typed or drag-selected) between
+# runs, per machine. Not checked into git (see .gitignore).
+$RegionCache = Join-Path $RepoRoot ".ocr-region.txt"
+if (Test-Path $RegionCache) {
+    $saved = (Get-Content $RegionCache -Raw).Trim()
+    if ($saved -ne "") { $Region = $saved }
+}
+
+Write-Host ""
+Write-Host "Subtitle region: $Region" -ForegroundColor Cyan
+$choice = Read-Host "Press ENTER to use it, or type 'r' to draw a new box on screen"
+$SelectRegion = $choice -match '^[Rr]'
+
 # Install missing pieces on first run.
 python -c "import mss, PIL, anthropic" 2>$null
 if ($LASTEXITCODE -ne 0) {
@@ -85,18 +101,27 @@ if ($LASTEXITCODE -ne 0) {
 # Open the overlay; it auto-reconnects until the server is up.
 Start-Process "http://127.0.0.1:$Port/"
 
-Write-Host "Korean screen-OCR subtitles starting (region=$Region, model=$AnthropicModel)..." -ForegroundColor Green
+if ($SelectRegion) {
+    Write-Host "Korean screen-OCR subtitles starting (drag a box over the subtitles, model=$AnthropicModel)..." -ForegroundColor Green
+} else {
+    Write-Host "Korean screen-OCR subtitles starting (region=$Region, model=$AnthropicModel)..." -ForegroundColor Green
+}
 Write-Host "Overlay: http://127.0.0.1:$Port/  -- keep it OUTSIDE the watched region. Ctrl+C to stop." -ForegroundColor Green
 $ocrArgs = @(
     "-m", "plextranslator", "ocr",
     "--source-language", $Lang,
-    "--region", $Region,
     "--interval", $Interval,
     "--stable-frames", $StableFrames,
     "--anthropic-model", $AnthropicModel,
     "--ocr-backend", $OcrBackend,
     "--psm", $Psm,
-    "--port", $Port
+    "--port", $Port,
+    "--region-cache", $RegionCache
 )
+if ($SelectRegion) {
+    $ocrArgs += @("--select-region")
+} else {
+    $ocrArgs += @("--region", $Region)
+}
 if ($TesseractCmd -ne "") { $ocrArgs += @("--tesseract-cmd", $TesseractCmd) }
 python @ocrArgs

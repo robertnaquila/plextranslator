@@ -314,7 +314,15 @@ pip install -e ".[run,llm,monitor,ocr]"
 A `.env` in the working directory is loaded automatically by every command
 (real environment variables still take precedence).
 Then edit the `settings` block at the top of either `.ps1` (capture device /
-screen region, model choice).
+screen region, model choice). For OCR, find your subtitle region once with
+`python -m plextranslator ocr --select-region` and paste the printed
+coordinates into `$Region` in `watch-korean-ocr.ps1` — a tight region around
+just the subtitle text is both faster and much more accurate than the
+`bottom`/`bottom:N` default.
+
+**Desktop shortcut**: run `scripts\create-desktop-shortcut.ps1` once (from
+PowerShell, in the repo folder) to add a "Korean OCR Subtitles" icon to your
+Desktop — double-click it any time instead of opening this folder.
 
 > ⚠️ **Model reality check for audio capture on CPU**: `small` keeps up with
 > real time; `medium` is borderline; `large-v3` needs a GPU (with catch-up it

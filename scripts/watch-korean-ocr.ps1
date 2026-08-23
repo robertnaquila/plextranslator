@@ -11,10 +11,16 @@
 #
 # One-time setup:
 #   pip install -e ".[ocr]"
-#   pip install winsdk        (Windows built-in OCR — recommended)
-#   Windows Settings > Time & Language > Language & region > Add a language
-#     > 한국어 (Korean)   — installs the Korean OCR pack; keep English as display.
+#   pip install pytesseract Pillow
+#   winget install UB-Mannheim.TesseractOCR   (tick Korean under language data,
+#     or download it after: see README "OCR" section for the tessdata URL)
 #   Put your Claude key in a .env file in the repo root: ANTHROPIC_API_KEY=sk-ant-...
+#
+# (If Windows Update lets you install the Korean OCR language pack — Settings >
+#  Time & Language > Language & region > Add a language > 한국어 — you can set
+#  $OcrBackend below to "auto" or "windows" for the built-in engine instead,
+#  which is more accurate. It failed with error 0x80070102 on some machines;
+#  Tesseract is the default here because it always works.)
 #
 # IMPORTANT: keep the caption overlay browser window OUTSIDE the watched region
 # (e.g. above the video, or on another monitor) so the OCR never reads it.
@@ -23,18 +29,23 @@ $ErrorActionPreference = "Stop"
 
 # ============================= settings =============================
 $Lang           = "ko"                       # language of the burned-in subs
-$Region         = "bottom"                   # bottom 30% of the screen; or "bottom:40",
-                                             # or exact pixels "left,top,width,height".
-                                             # Find yours interactively:
-                                             #   python -m plextranslator ocr --select-region
+# Exact pixels "left,top,width,height" around JUST the subtitle text — a tight
+# region is far more accurate than the "bottom"/"bottom:N" percentage presets.
+# Find yours interactively (drag a box over the subtitle band):
+#   python -m plextranslator ocr --select-region
+$Region         = "7,837,947,186"
 $Interval       = 0.4                        # seconds between screen checks
-$StableFrames   = 2                          # frames a line must persist (1 = fastest)
+$StableFrames   = 3                          # frames a line must persist (fewer
+                                             # transition-frame misreads than 2)
 # Claude Haiku is fast, cheap, and plenty for subtitle lines — snappier captions.
 # For maximum translation quality use "claude-opus-4-8" (a beat slower per line).
 $AnthropicModel = "claude-haiku-4-5-20251001"
 $Port           = 8765
 # OCR engine: "auto" (Windows built-in, else Tesseract), "windows", "tesseract".
-$OcrBackend     = "auto"
+$OcrBackend     = "tesseract"
+# Tesseract page-segmentation mode: 7 = single line, best for a tight strip
+# like $Region above. Use 6 ("block") if you widen the region to 2+ lines.
+$Psm            = 7
 # Only needed for Tesseract when it isn't on PATH (the Windows installer doesn't
 # add it). Leave "" to auto-detect the usual install locations.
 $TesseractCmd   = ""
@@ -84,6 +95,7 @@ $ocrArgs = @(
     "--stable-frames", $StableFrames,
     "--anthropic-model", $AnthropicModel,
     "--ocr-backend", $OcrBackend,
+    "--psm", $Psm,
     "--port", $Port
 )
 if ($TesseractCmd -ne "") { $ocrArgs += @("--tesseract-cmd", $TesseractCmd) }

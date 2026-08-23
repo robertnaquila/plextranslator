@@ -44,6 +44,10 @@ Plex ──(active session / library scan)──▶ media file path + KO/JA audi
 - **The optional Claude pass** (`--use-llm`) rewrites Whisper's sometimes-literal
   output into fluent, idiomatic subtitle English while preserving cue count and
   timing.
+- **Two audio-free live modes** need no Plex and no media files: `capture`
+  transcribes the system audio you're playing (Netflix etc.), and `ocr` reads
+  **burned-in subtitles straight off the screen** and translates them — the
+  lowest-latency option when the show already shows original-language subs.
 
 ---
 
@@ -227,25 +231,85 @@ sentence or two, so captions read smoothly instead of stuttering. Pass
 > faster model (`medium`/`large-v3` on a GPU). On CPU, try `--model small` and a
 > larger `--window-seconds`.
 
-### One-click Korean (best quality) — Windows
+**Staying seamless.** Three things keep capture-mode captions flowing:
 
-`scripts/watch-korean.ps1` wraps capture mode for Korean shows with the best
-Whisper model (`large-v3`) and Claude (LLM) refinement, and opens the overlay for
-you. Double-click `scripts/watch-korean.bat`, or run the `.ps1` from PowerShell.
+- **Catch-up** (on by default): if transcription runs slower than real time (big
+  model on CPU), stale audio is skipped after each window so caption lag stays
+  bounded at roughly one window + inference time instead of growing all session.
+  The console logs `skipping stale audio to catch up` when it kicks in; disable
+  with `--no-catch-up` if you'd rather transcribe everything late.
+- **Async Claude refinement**: with `--use-llm`, the raw translation is shown
+  immediately and Claude's polished wording swaps in a moment later — refinement
+  never delays the first caption.
+- **Adaptive hold**: each caption stays on screen until the next one lands
+  (sized to the observed transcription time), so slow models no longer blink to
+  blank between windows.
+- `--beam-size 1` makes Whisper ~2x faster for a small accuracy cost — a good
+  lever on CPU.
+
+### OCR — burned-in subtitles read off the screen (lowest latency)
+
+If the show already has **burned-in subtitles in the original language** — most
+Korean variety shows, hardsubbed rips, or shows you stream from someone else's
+server — you don't need audio transcription at all. `ocr` watches the part of
+the screen where those subtitles appear, reads each new line the moment it shows
+up, and translates it with Claude:
+
+```bash
+pip install -e ".[ocr]"
+pip install winsdk                       # Windows built-in OCR (recommended)
+plextranslator ocr --source-language ko  # watches the bottom 30% of the screen
+```
+
+Then open http://127.0.0.1:8765/ for the captions — and **keep that overlay
+window outside the watched region** (above the video or on another monitor), or
+the OCR would read its own captions. A script filter (Hangul/kana required for
+ko/ja) guards against that too.
+
+This is the snappiest mode: captions typically land **1–2 s after the original
+line appears** (vs. 8 s+ for audio windows), there's **no Whisper model, no
+audio routing, and almost no CPU load**. Whisper/ffmpeg aren't involved at all.
+
+- **Pick the region**: `--region bottom` (default, bottom 30%), `--region
+  bottom:40`, exact pixels `--region "0,780,1920,300"`, or drag it on screen
+  with `--select-region` (prints the coordinates for reuse).
+- **Test it**: `plextranslator ocr --probe` grabs the region once and prints
+  what it read — run it while a subtitle is on screen.
+- **OCR engines** (`--ocr-backend`): `windows` uses the OCR built into
+  Windows 10/11 (`pip install winsdk`, plus the language pack: Settings → Time &
+  Language → Language & region → Add a language → 한국어); `tesseract` works
+  everywhere (`pip install pytesseract` + the Tesseract binary with e.g. `kor`
+  data); `auto` (default) tries Windows first, then Tesseract.
+- **Latency knobs**: `--interval` (default 0.4 s between screen checks) and
+  `--stable-frames` (default 2 frames of debounce; `1` is fastest but may
+  flicker on OCR misreads). Repeated lines are cached and translate instantly.
+- Translation uses Claude (`ANTHROPIC_API_KEY`); a fast model like Claude Haiku
+  keeps per-line latency well under a second. Without a key it shows the
+  original text untranslated.
+
+### One-click Korean — Windows
+
+Two launchers in `scripts/`, both double-clickable:
+
+- **`watch-korean-ocr.bat`** — for shows with burned-in Korean subs (the fastest
+  mode; no Whisper or audio setup). Watches the bottom of the screen, translates
+  with Claude Haiku by default.
+- **`watch-korean.bat`** — audio capture + Whisper (`small` by default, the CPU
+  sweet spot) + Claude refinement, for content with no burned-in subs.
 
 One-time setup:
 ```powershell
-pip install -e ".[run,llm,monitor]"
+pip install -e ".[run,llm,monitor,ocr]"
 # put your Claude key in a .env file in the repo root:
 #   ANTHROPIC_API_KEY=sk-ant-...
 ```
-Then edit the `settings` block at the top of `watch-korean.ps1` (your capture
-device name, and `--monitor-device` if you use it instead of Windows "Listen").
+Then edit the `settings` block at the top of either `.ps1` (capture device /
+screen region, model choice).
 
-> ⚠️ **`large-v3` on a CPU (no GPU) is heavy** and may fall progressively behind
-> on long shows; LLM refinement adds a second or two per line too. If captions
-> lag, change `$Model` to `medium` (or `small`) in the script. The model affects
-> quality and caption delay, not the audio you hear.
+> ⚠️ **Model reality check for audio capture on CPU**: `small` keeps up with
+> real time; `medium` is borderline; `large-v3` needs a GPU (with catch-up it
+> stays bounded but runs far behind). The model affects caption quality and
+> delay, not the audio you hear.
 
 ### Library — pre-translate KO/JA media
 
@@ -416,12 +480,16 @@ plextranslator/
   live.py          # live/follow-the-playhead mode
   web.py           # browser overlay server (SSE) synced to Plex playback
   capture.py       # live system-audio capture (Netflix & any streaming)
+  ocr.py           # screen-OCR mode: burned-in subs -> Claude translation
+  ocr_picker.py    # drag-to-select region picker for `ocr --select-region`
   dedupe.py        # overlap de-duplication / smoothing for rolling captions
+  workers.py       # latest-only background worker (refinement/translation)
   doctor.py        # `doctor` preflight checks (ffmpeg, backend, model, Plex)
   cli.py           # argparse entrypoint
 Dockerfile          # container (ffmpeg + plextranslator)
 docker-compose.yml  # Synology / Docker deployment (batch or web)
 scripts/translate_new.sh  # nightly batch helper for Task Scheduler / cron
+scripts/watch-korean*.bat # one-click Windows launchers (audio / screen-OCR)
 ```
 
 ## Limitations & notes

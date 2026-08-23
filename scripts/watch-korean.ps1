@@ -16,7 +16,13 @@ $ErrorActionPreference = "Stop"
 
 # ============================= settings =============================
 $Lang          = "ko"                                              # Korean
-$Model         = "large-v3"                                        # best quality
+# On a CPU (no NVIDIA GPU), "small" is the sweet spot: it transcribes faster
+# than real time, so captions stay continuous and close to live. "medium" is
+# better English but borderline on CPU; "large-v3" is best but needs a GPU to
+# keep up (on CPU it runs far behind even with catch-up skipping).
+# TIP: if the show has BURNED-IN Korean subtitles, use watch-korean-ocr.bat
+# instead — it reads them off the screen and is much faster than any of these.
+$Model         = "small"
 $AnthropicModel = "claude-opus-4-8"                                # best Claude model
 $AudioFormat   = "dshow"
 $AudioDevice   = "audio=Stereo Mix (Realtek High Definition Audio)" # <-- your capture device

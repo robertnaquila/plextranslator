@@ -36,6 +36,14 @@ whispercpp = [
 monitor = [
     "sounddevice>=0.4",
 ]
+# Screen-OCR subtitle mode (`ocr`): translate burned-in subtitles by watching a
+# screen region. Also install an OCR engine: `pip install winsdk` (Windows
+# built-in OCR) or `pip install pytesseract` + the Tesseract binary.
+ocr = [
+    "mss>=9.0",
+    "Pillow>=10.0",
+    "anthropic>=0.40.0",
+]
 # Optional LLM refinement of Whisper's literal translation.
 llm = [
     "anthropic>=0.40.0",

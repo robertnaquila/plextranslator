@@ -272,7 +272,10 @@ audio routing, and almost no CPU load**. Whisper/ffmpeg aren't involved at all.
 
 - **Pick the region**: `--region bottom` (default, bottom 30%), `--region
   bottom:40`, exact pixels `--region "0,780,1920,300"`, or drag it on screen
-  with `--select-region` (prints the coordinates for reuse).
+  with `--select-region` (prints the coordinates for reuse). Add
+  `--region-cache PATH` to have the resolved region (typed or picked) written
+  to a file after startup — the `watch-korean-ocr` scripts use this to offer
+  the last-used region as the default on the next run.
 - **Test it**: `plextranslator ocr --probe` grabs the region once and prints
   what it read — run it while a subtitle is on screen. Add
   `--save-frame frame.png` to also write the captured region *and* the
@@ -313,12 +316,13 @@ pip install -e ".[run,llm,monitor,ocr]"
 ```
 A `.env` in the working directory is loaded automatically by every command
 (real environment variables still take precedence).
-Then edit the `settings` block at the top of either `.ps1` (capture device /
-screen region, model choice). For OCR, find your subtitle region once with
-`python -m plextranslator ocr --select-region` and paste the printed
-coordinates into `$Region` in `watch-korean-ocr.ps1` — a tight region around
-just the subtitle text is both faster and much more accurate than the
-`bottom`/`bottom:N` default.
+Then edit the `settings` block at the top of either `.ps1` (capture device,
+model choice). For OCR, `watch-korean-ocr.ps1` asks you **every time it runs**
+whether to keep the last-used subtitle region or draw a new box on screen —
+press Enter to keep it, or `r` to redraw (useful when a show's video window
+moves or resizes). A tight region around just the subtitle text is both faster
+and much more accurate than the wide default. Whatever you pick is remembered
+in a local `.ocr-region.txt` (git-ignored, per-machine) for next time.
 
 **Desktop shortcut**: double-click `scripts\create-desktop-shortcut.bat` once
 to add a "Korean OCR Subtitles" icon to your Desktop — double-click that icon

@@ -26,6 +26,7 @@ htmlcov/
 *.srt.tmp
 subtitles_out/
 *.log
+.ocr-region.txt
 
 # OS
 .DS_Store

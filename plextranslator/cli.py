@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import List, Optional
 
@@ -220,6 +221,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--anthropic-model", dest="anthropic_model",
         help="Claude model used for translation.",
     )
+    p_ocr.add_argument(
+        "--region-cache", dest="region_cache", metavar="PATH",
+        help="Write the resolved region (typed or --select-region-picked) to "
+        "this file after startup, so a wrapper script can offer it as the "
+        "default region next time.",
+    )
     p_ocr.add_argument("-v", "--verbose", action="store_true", help="Debug logging.")
 
     # library
@@ -342,8 +349,6 @@ def _cmd_config(config: Config) -> int:
 
 
 def _cmd_file(config: Config, args: argparse.Namespace) -> int:
-    import os
-
     from .pipeline import Pipeline
     from .subtitles import to_srt
 
@@ -399,6 +404,17 @@ def _cmd_ocr(config: Config, args: argparse.Namespace) -> int:
             return 1
         region = f"{picked.left},{picked.top},{picked.width},{picked.height}"
         print(f"Selected region: {region}  (reuse it with --region {region})")
+
+    region_cache = getattr(args, "region_cache", None)
+    if region_cache:
+        try:
+            cache_dir = os.path.dirname(region_cache)
+            if cache_dir:
+                os.makedirs(cache_dir, exist_ok=True)
+            with open(region_cache, "w", encoding="utf-8") as fh:
+                fh.write(region)
+        except OSError as exc:
+            print(f"warning: could not write --region-cache: {exc}", file=sys.stderr)
 
     try:
         run_ocr(

@@ -148,6 +148,64 @@ def build_parser() -> argparse.ArgumentParser:
         "--list-monitor-devices", dest="list_monitor_devices", action="store_true",
         help="List audio output devices for --monitor-device, then exit.",
     )
+    p_cap.add_argument(
+        "--no-catch-up", dest="catch_up", action="store_false",
+        help="Don't skip stale audio when transcription falls behind real time "
+        "(caption lag then grows unboundedly with slow models).",
+    )
+    p_cap.add_argument(
+        "--beam-size", dest="beam_size", type=int, default=5,
+        help="Whisper beam size (default 5; 1 is ~2x faster, slightly less accurate).",
+    )
+
+    # ocr (translate burned-in subtitles by watching a screen region)
+    p_ocr = sub.add_parser(
+        "ocr",
+        help="Translate burned-in subtitles by watching a screen region (lowest "
+        "latency; no Whisper or audio setup needed).",
+    )
+    p_ocr.add_argument("--host", default="127.0.0.1", help="Bind host (default 127.0.0.1).")
+    p_ocr.add_argument("--port", type=int, default=8765, help="Bind port (default 8765).")
+    p_ocr.add_argument(
+        "--region", default="bottom",
+        help="Screen area to watch: 'left,top,width,height' pixels, 'bottom' "
+        "(bottom 30%%, the default), or 'bottom:<percent>'.",
+    )
+    p_ocr.add_argument(
+        "--select-region", dest="select_region", action="store_true",
+        help="Drag-select the region on screen instead of typing coordinates.",
+    )
+    p_ocr.add_argument(
+        "--interval", type=float, default=0.4,
+        help="Seconds between screen checks (default 0.4).",
+    )
+    p_ocr.add_argument(
+        "--ocr-backend", dest="ocr_backend",
+        choices=["auto", "windows", "tesseract"], default="auto",
+        help="OCR engine: Windows built-in, Tesseract, or auto-pick (default).",
+    )
+    p_ocr.add_argument(
+        "--source-language", dest="source_language", default="ko",
+        help="Language of the burned-in subtitles (default ko).",
+    )
+    p_ocr.add_argument(
+        "--monitor-index", dest="monitor_index", type=int, default=1,
+        help="Which monitor to watch (1 = primary).",
+    )
+    p_ocr.add_argument(
+        "--stable-frames", dest="stable_frames", type=int, default=2,
+        help="Frames a line must persist before translating (default 2; "
+        "1 = fastest, may flicker on OCR misreads).",
+    )
+    p_ocr.add_argument(
+        "--probe", action="store_true",
+        help="Grab + OCR the region once, print what was read, and exit.",
+    )
+    p_ocr.add_argument(
+        "--anthropic-model", dest="anthropic_model",
+        help="Claude model used for translation.",
+    )
+    p_ocr.add_argument("-v", "--verbose", action="store_true", help="Debug logging.")
 
     # library
     p_lib = sub.add_parser("library", help="Batch-subtitle the KO/JA library.")
@@ -227,6 +285,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _cmd_file(config, args)
     if args.command == "capture":
         return _cmd_capture(config, args)
+    if args.command == "ocr":
+        return _cmd_ocr(config, args)
 
     # live and library both need a valid Plex connection.
     problems = config.validate()
@@ -304,6 +364,45 @@ def _cmd_doctor(config: Config) -> int:
     return exit_code(checks)
 
 
+def _cmd_ocr(config: Config, args: argparse.Namespace) -> int:
+    from .ocr import run_ocr
+
+    region = args.region
+    if getattr(args, "select_region", False):
+        from .ocr_picker import pick_region
+
+        try:
+            picked = pick_region()
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        if picked is None:
+            print("Selection cancelled.")
+            return 1
+        region = f"{picked.left},{picked.top},{picked.width},{picked.height}"
+        print(f"Selected region: {region}  (reuse it with --region {region})")
+
+    try:
+        run_ocr(
+            config,
+            host=args.host,
+            port=args.port,
+            region_spec=region,
+            interval=args.interval,
+            backend=args.ocr_backend,
+            source_language=args.source_language,
+            monitor_index=args.monitor_index,
+            stable_frames=args.stable_frames,
+            probe=args.probe,
+        )
+    except KeyboardInterrupt:
+        pass
+    except (RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def _cmd_capture(config: Config, args: argparse.Namespace) -> int:
     from .capture import run_capture
 
@@ -335,6 +434,8 @@ def _cmd_capture(config: Config, args: argparse.Namespace) -> int:
             source_language=args.source_language,
             dedupe=args.dedupe,
             monitor_device=args.monitor_device,
+            catch_up=args.catch_up,
+            beam_size=args.beam_size,
         )
     except KeyboardInterrupt:
         pass

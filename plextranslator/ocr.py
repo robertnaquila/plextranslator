@@ -1,0 +1,616 @@
+"""Screen-OCR subtitles: translate burned-in subtitles by watching the screen.
+
+Many Korean/Japanese shows come with *burned-in* subtitles in the original
+language (variety-show captions, hardsubbed rips, shows on someone else's Plex
+server). Audio transcription ignores that gift and re-derives the dialogue the
+slow way. This mode instead watches the region of the screen where those
+subtitles appear, OCRs each new line the moment it shows up, and translates it
+to English with Claude — typically 1–2 seconds behind the on-screen text,
+far snappier than transcribing rolling audio windows, and with no Whisper
+model or audio routing involved.
+
+Pipeline (all off the hot path where it can be slow):
+
+    screen region ──grab (mss)──▶ OCR backend ──▶ SubtitleTracker (debounce,
+        dedupe, script filter) ──new line──▶ Claude translate (cached,
+        latest-only worker) ──▶ web overlay caption
+
+OCR backends (selected with ``--ocr-backend``, ``auto`` picks for you):
+
+- ``windows`` — the OCR engine built into Windows 10/11 (``winsdk``). Fast and
+  accurate; needs the language pack for the source language installed
+  (Settings → Time & Language → Language & region → Add a language → 한국어).
+- ``tesseract`` — cross-platform via ``pytesseract`` + the Tesseract binary
+  with the language's traineddata (e.g. ``kor``).
+
+The overlay browser window must live OUTSIDE the watched region (e.g. put the
+region over the video's subtitle band and the overlay window above it, or on
+another monitor) — otherwise the OCR would read its own captions. The tracker's
+script filter (Hangul/kana required for ko/ja) also guards against that.
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+import time
+from collections import OrderedDict, deque
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+
+from .config import Config
+from .web import SubtitleStore, _StoppableThread
+from .workers import LatestOnlyWorker
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_BOTTOM_PERCENT = 30
+
+
+@dataclass(frozen=True)
+class Region:
+    """A screen rectangle, in pixels relative to the chosen monitor."""
+
+    left: int
+    top: int
+    width: int
+    height: int
+
+
+def parse_region(spec: str, screen_size: Tuple[int, int]) -> Region:
+    """Parse a region spec into a :class:`Region`.
+
+    Accepted forms:
+    - ``"left,top,width,height"`` — explicit pixels (e.g. ``"0,780,1920,300"``)
+    - ``"bottom"`` — the bottom 30% of the screen, full width (where burned-in
+      subtitles usually live)
+    - ``"bottom:40"`` — the bottom 40% (1–95)
+    """
+    spec = (spec or "").strip().lower()
+    sw, sh = screen_size
+    if spec.startswith("bottom"):
+        pct = DEFAULT_BOTTOM_PERCENT
+        if ":" in spec:
+            try:
+                pct = int(spec.split(":", 1)[1])
+            except ValueError:
+                raise ValueError(f"Bad region {spec!r}: expected e.g. 'bottom:40'.")
+        if not 1 <= pct <= 95:
+            raise ValueError(f"Bad region {spec!r}: percent must be 1-95.")
+        top = sh - int(sh * pct / 100)
+        return Region(left=0, top=top, width=sw, height=sh - top)
+    parts = spec.split(",")
+    if len(parts) != 4:
+        raise ValueError(
+            f"Bad region {spec!r}: use 'left,top,width,height' pixels, "
+            "'bottom', or 'bottom:<percent>'."
+        )
+    try:
+        left, top, width, height = (int(p.strip()) for p in parts)
+    except ValueError:
+        raise ValueError(f"Bad region {spec!r}: all four values must be integers.")
+    if width <= 0 or height <= 0:
+        raise ValueError(f"Bad region {spec!r}: width and height must be positive.")
+    if left < 0 or top < 0:
+        raise ValueError(f"Bad region {spec!r}: left and top must be >= 0.")
+    return Region(left=left, top=top, width=width, height=height)
+
+
+# -- text stabilization ----------------------------------------------------
+
+_SCRIPT_RANGES = {
+    # Hangul syllables, jamo, compatibility jamo
+    "ko": ((0xAC00, 0xD7A3), (0x1100, 0x11FF), (0x3130, 0x318F)),
+    # Hiragana, katakana, CJK ideographs
+    "ja": ((0x3040, 0x309F), (0x30A0, 0x30FF), (0x4E00, 0x9FFF)),
+}
+
+
+def matches_script(text: str, language: Optional[str]) -> bool:
+    """True if ``text`` contains at least one character of ``language``'s script.
+
+    Filters out OCR noise from UI chrome, logos, or (crucially) the English
+    caption overlay itself if it strays into the watched region. Languages
+    without a registered script range accept anything.
+    """
+    ranges = _SCRIPT_RANGES.get((language or "").lower())
+    if not ranges:
+        return True
+    return any(lo <= ord(ch) <= hi for ch in text for lo, hi in ranges)
+
+
+class SubtitleTracker:
+    """Turns a noisy stream of per-frame OCR text into clean line events.
+
+    ``feed`` is called once per captured frame and returns:
+    - ``None`` — nothing new (same line still showing, or not yet stable)
+    - a string — a NEW subtitle line, seen stable for ``stable_frames`` frames
+    - ``""`` — the subtitle vanished (``clear_frames`` empty frames in a row),
+      so the display should clear
+
+    Debouncing by requiring the same text for ``stable_frames`` consecutive
+    frames absorbs single-frame OCR misreads; the script filter drops text with
+    none of the source language's characters (UI noise, the overlay itself).
+    """
+
+    def __init__(
+        self,
+        *,
+        source_language: Optional[str] = None,
+        stable_frames: int = 2,
+        clear_frames: int = 4,
+    ) -> None:
+        if stable_frames < 1:
+            raise ValueError("stable_frames must be >= 1")
+        self.source_language = source_language
+        self.stable_frames = stable_frames
+        self.clear_frames = clear_frames
+        self._current: Optional[str] = None
+        self._pending: Optional[str] = None
+        self._pending_count = 0
+        self._empty_count = 0
+
+    def feed(self, raw: Optional[str]) -> Optional[str]:
+        text = " ".join((raw or "").split())
+        if text and not matches_script(text, self.source_language):
+            text = ""
+        if not text:
+            self._pending = None
+            self._pending_count = 0
+            self._empty_count += 1
+            if self._current is not None and self._empty_count >= self.clear_frames:
+                self._current = None
+                return ""
+            return None
+        self._empty_count = 0
+        if text == self._current:
+            self._pending = None
+            self._pending_count = 0
+            return None
+        if text == self._pending:
+            self._pending_count += 1
+        else:
+            self._pending = text
+            self._pending_count = 1
+        if self._pending_count >= self.stable_frames:
+            emitted = self._pending
+            self._current = emitted
+            self._pending = None
+            self._pending_count = 0
+            return emitted
+        return None
+
+
+class TranslationCache:
+    """Tiny LRU so repeated lines (recaps, repeated phrases) translate once."""
+
+    def __init__(self, maxsize: int = 500) -> None:
+        self.maxsize = maxsize
+        self._data: "OrderedDict[str, str]" = OrderedDict()
+
+    def get(self, key: str) -> Optional[str]:
+        if key not in self._data:
+            return None
+        self._data.move_to_end(key)
+        return self._data[key]
+
+    def put(self, key: str, value: str) -> None:
+        self._data[key] = value
+        self._data.move_to_end(key)
+        while len(self._data) > self.maxsize:
+            self._data.popitem(last=False)
+
+
+# -- translation -----------------------------------------------------------
+
+_LANGUAGE_NAMES = {"ko": "Korean", "ja": "Japanese", "zh": "Chinese", "en": "English"}
+
+
+class LlmTranslator:
+    """Translates subtitle lines with Claude, keeping short rolling context.
+
+    Recent (source, translation) pairs are replayed as prior turns so pronouns,
+    names, and tone stay consistent across lines. The client is injectable for
+    tests; otherwise the ``anthropic`` package is imported lazily on first use.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        *,
+        source_language: str = "ko",
+        context_pairs: int = 4,
+        client=None,
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.source_language = source_language
+        self._context: "deque[tuple]" = deque(maxlen=context_pairs)
+        self._client = client
+
+    def _ensure_client(self):
+        if self._client is None:
+            try:
+                import anthropic
+            except ImportError as exc:  # pragma: no cover
+                raise RuntimeError(
+                    "anthropic not installed. Run: pip install anthropic"
+                ) from exc
+            self._client = anthropic.Anthropic(api_key=self.api_key)
+        return self._client
+
+    def _system_prompt(self) -> str:
+        lang = _LANGUAGE_NAMES.get(self.source_language, self.source_language)
+        return (
+            f"You translate {lang} subtitle lines from a TV show into natural, "
+            "concise English subtitles. The lines arrive one at a time, in order. "
+            "Reply with ONLY the English translation of the latest line - no "
+            "quotes, no romanization, no notes."
+        )
+
+    def translate(self, text: str) -> str:
+        client = self._ensure_client()
+        messages = []
+        for src, tgt in self._context:
+            messages.append({"role": "user", "content": src})
+            messages.append({"role": "assistant", "content": tgt})
+        messages.append({"role": "user", "content": text})
+        response = client.messages.create(
+            model=self.model,
+            max_tokens=300,
+            system=self._system_prompt(),
+            messages=messages,
+        )
+        translated = response.content[0].text.strip()
+        self._context.append((text, translated))
+        return translated
+
+
+# -- screen capture --------------------------------------------------------
+
+
+def screen_size(monitor_index: int = 1) -> Tuple[int, int]:
+    """Return (width, height) of the chosen monitor (1 = primary for mss)."""
+    try:
+        import mss
+    except ImportError as exc:
+        raise RuntimeError(
+            "mss not installed - screen capture needs it. Run: pip install mss"
+        ) from exc
+    try:
+        with mss.mss() as sct:
+            monitors = sct.monitors
+            if not 0 <= monitor_index < len(monitors):
+                raise RuntimeError(
+                    f"Monitor {monitor_index} not found ({len(monitors) - 1} available)."
+                )
+            mon = monitors[monitor_index]
+            return mon["width"], mon["height"]
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - e.g. no display on headless boxes
+        raise RuntimeError(f"Cannot access the screen: {exc}") from exc
+
+
+class ScreenGrabber:
+    """Grabs a screen region as raw BGRA bytes via mss.
+
+    Create the instance in the thread that will use it (mss keeps per-thread
+    native handles on some platforms).
+    """
+
+    def __init__(self, monitor_index: int = 1) -> None:
+        try:
+            import mss
+        except ImportError as exc:
+            raise RuntimeError(
+                "mss not installed - screen capture needs it. Run: pip install mss"
+            ) from exc
+        try:
+            self._sct = mss.mss()
+            monitors = self._sct.monitors
+        except Exception as exc:  # noqa: BLE001 - e.g. no display available
+            raise RuntimeError(f"Cannot access the screen: {exc}") from exc
+        if not 0 <= monitor_index < len(monitors):
+            raise RuntimeError(
+                f"Monitor {monitor_index} not found ({len(monitors) - 1} available)."
+            )
+        self._mon = monitors[monitor_index]
+
+    def grab(self, region: Region) -> Tuple[bytes, int, int]:
+        shot = self._sct.grab(
+            {
+                "left": self._mon["left"] + region.left,
+                "top": self._mon["top"] + region.top,
+                "width": region.width,
+                "height": region.height,
+            }
+        )
+        return bytes(shot.bgra), shot.width, shot.height
+
+
+# -- OCR backends ----------------------------------------------------------
+
+# tesseract uses ISO 639-2 codes; Windows OCR uses BCP-47 tags.
+_TESSERACT_LANGS = {"ko": "kor", "ja": "jpn", "zh": "chi_sim", "en": "eng"}
+
+
+class WindowsOcrBackend:
+    """OCR via the engine built into Windows 10/11 (needs ``pip install winsdk``
+    and the source language's Windows language pack)."""
+
+    def __init__(self, language: str = "ko") -> None:
+        if sys.platform != "win32":
+            raise RuntimeError("The 'windows' OCR backend only works on Windows.")
+        try:
+            from winsdk.windows.globalization import Language
+            from winsdk.windows.media.ocr import OcrEngine
+        except ImportError as exc:
+            raise RuntimeError(
+                "winsdk not installed - the Windows OCR backend needs it. "
+                "Run: pip install winsdk"
+            ) from exc
+        self._engine = OcrEngine.try_create_from_language(Language(language))
+        if self._engine is None:
+            available = ", ".join(
+                lang.language_tag for lang in OcrEngine.get_available_recognizer_languages()
+            )
+            raise RuntimeError(
+                f"Windows has no OCR support installed for {language!r} "
+                f"(available: {available or 'none'}). Install the language pack: "
+                "Settings > Time & Language > Language & region > Add a language."
+            )
+        self.language = language
+
+    def recognize(self, bgra: bytes, width: int, height: int) -> str:
+        import asyncio
+
+        from winsdk.windows.graphics.imaging import BitmapPixelFormat, SoftwareBitmap
+        from winsdk.windows.storage.streams import DataWriter
+
+        max_dim = getattr(self._engine, "max_image_dimension", 0) or 0
+        if max_dim and max(width, height) > max_dim:
+            raise RuntimeError(
+                f"Region {width}x{height} exceeds Windows OCR's max dimension "
+                f"({max_dim}px) - use a smaller --region."
+            )
+        writer = DataWriter()
+        writer.write_bytes(bgra)
+        buffer = writer.detach_buffer()
+        bitmap = SoftwareBitmap.create_copy_from_buffer(
+            buffer, BitmapPixelFormat.BGRA8, width, height
+        )
+
+        async def _recognize():
+            return await self._engine.recognize_async(bitmap)
+
+        result = asyncio.run(_recognize())
+        return (result.text or "").strip()
+
+
+class TesseractOcrBackend:
+    """OCR via pytesseract + the Tesseract binary (cross-platform fallback)."""
+
+    def __init__(self, language: str = "kor") -> None:
+        try:
+            import pytesseract
+            from PIL import Image  # noqa: F401 - verify Pillow is present too
+        except ImportError as exc:
+            raise RuntimeError(
+                "pytesseract/Pillow not installed - the tesseract OCR backend "
+                "needs them. Run: pip install pytesseract Pillow (and install "
+                "the Tesseract binary + language data, e.g. 'kor')."
+            ) from exc
+        self._pytesseract = pytesseract
+        self.language = language
+
+    def recognize(self, bgra: bytes, width: int, height: int) -> str:
+        from PIL import Image, ImageOps
+
+        # The canonical mss->PIL recipe: BGRA raw bytes, ignore alpha.
+        image = Image.frombytes("RGB", (width, height), bgra, "raw", "BGRX")
+        gray = ImageOps.autocontrast(image.convert("L"))
+        text = self._pytesseract.image_to_string(
+            gray, lang=self.language, config="--psm 6"
+        )
+        return (text or "").strip()
+
+
+def make_ocr_backend(name: str, source_language: str = "ko"):
+    """Build the requested OCR backend; ``auto`` prefers Windows OCR on Windows
+    and falls back to Tesseract, raising a combined message if neither works."""
+    tesseract_lang = _TESSERACT_LANGS.get(source_language, source_language)
+    errors: List[str] = []
+    if name in ("auto", "windows"):
+        try:
+            return WindowsOcrBackend(source_language)
+        except RuntimeError as exc:
+            if name == "windows":
+                raise
+            errors.append(f"windows: {exc}")
+    if name in ("auto", "tesseract"):
+        try:
+            return TesseractOcrBackend(tesseract_lang)
+        except RuntimeError as exc:
+            if name == "tesseract":
+                raise
+            errors.append(f"tesseract: {exc}")
+    if name not in ("auto", "windows", "tesseract"):
+        raise RuntimeError(f"Unknown OCR backend {name!r}.")
+    raise RuntimeError("No OCR backend available:\n  " + "\n  ".join(errors))
+
+
+# -- the engine ------------------------------------------------------------
+
+
+class OcrCaptionEngine(_StoppableThread):
+    """Watches a screen region for subtitle text and publishes translations."""
+
+    def __init__(
+        self,
+        store: SubtitleStore,
+        *,
+        region: Region,
+        ocr,
+        translator: Optional[LlmTranslator],
+        interval: float = 0.4,
+        source_language: str = "ko",
+        stable_frames: int = 2,
+        hold_seconds: float = 45.0,
+        monitor_index: int = 1,
+        grabber=None,
+        title: str = "Live subtitles (screen OCR)",
+    ) -> None:
+        super().__init__(name="plextranslator-ocr")
+        self.store = store
+        self.region = region
+        self.ocr = ocr
+        self.translator = translator
+        self.interval = interval
+        self.hold_seconds = hold_seconds
+        self.monitor_index = monitor_index
+        self.title = title
+        self.tracker = SubtitleTracker(
+            source_language=source_language, stable_frames=stable_frames
+        )
+        self.cache = TranslationCache()
+        self._grabber = grabber
+        self._seq = 0
+        self._worker = LatestOnlyWorker(self._translate_apply, name="plextranslator-translate")
+
+    def _translate_apply(self, item) -> None:
+        seq, text = item
+        try:
+            translated = self.translator.translate(text)
+            self.cache.put(text, translated)
+        except Exception as exc:  # noqa: BLE001 - show the original over nothing
+            logger.warning("Translation failed (%s); showing original text.", exc)
+            translated = text
+        if seq == self._seq:
+            self.store.set_live_caption(translated, hold_seconds=self.hold_seconds)
+
+    def _step(self) -> None:
+        """One frame: grab -> OCR -> track -> (translate ->) display."""
+        raw = None
+        try:
+            bgra, width, height = self._grabber.grab(self.region)
+            raw = self.ocr.recognize(bgra, width, height)
+        except Exception as exc:  # noqa: BLE001 - keep watching
+            logger.warning("OCR frame failed: %s", exc)
+            return
+        event = self.tracker.feed(raw)
+        if event is None:
+            return
+        self._seq += 1
+        if event == "":
+            self.store.set_live_caption("", hold_seconds=1.0)
+            return
+        logger.info("Subtitle: %s", event)
+        cached = self.cache.get(event)
+        if cached is not None:
+            self.store.set_live_caption(cached, hold_seconds=self.hold_seconds)
+        elif self.translator is None:
+            self.store.set_live_caption(event, hold_seconds=self.hold_seconds)
+        else:
+            self._worker.submit((self._seq, event))
+
+    def run(self) -> None:  # pragma: no cover - needs a screen
+        self.store.start_live(self.title)
+        self.store.set_status(
+            f"watching {self.region.width}x{self.region.height} at "
+            f"({self.region.left},{self.region.top})"
+        )
+        try:
+            if self._grabber is None:
+                self._grabber = ScreenGrabber(self.monitor_index)
+        except RuntimeError as exc:
+            logger.error("%s", exc)
+            self.store.set_status(f"error: {exc}")
+            return
+        self._worker.start()
+        try:
+            while not self.stopped:
+                started = time.monotonic()
+                self._step()
+                delay = self.interval - (time.monotonic() - started)
+                if delay > 0:
+                    time.sleep(min(delay, 0.5))
+        finally:
+            self._worker.stop()
+
+
+def run_ocr(
+    config: Config,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    region_spec: str = "bottom",
+    interval: float = 0.4,
+    backend: str = "auto",
+    source_language: str = "ko",
+    monitor_index: int = 1,
+    stable_frames: int = 2,
+    hold_seconds: float = 45.0,
+    probe: bool = False,
+) -> None:
+    """Start screen-OCR subtitles + the web overlay server (or a one-shot probe)."""
+    from .web import make_server
+
+    size = screen_size(monitor_index)
+    region = parse_region(region_spec, size)
+    ocr = make_ocr_backend(backend, source_language)
+
+    translator: Optional[LlmTranslator] = None
+    if config.anthropic_api_key:
+        translator = LlmTranslator(
+            api_key=config.anthropic_api_key,
+            model=config.anthropic_model,
+            source_language=source_language,
+        )
+    else:
+        logger.warning(
+            "ANTHROPIC_API_KEY is not set - captions will show the ORIGINAL "
+            "text untranslated. Set the key (e.g. in .env) to translate."
+        )
+
+    if probe:
+        grabber = ScreenGrabber(monitor_index)
+        bgra, width, height = grabber.grab(region)
+        text = " ".join((ocr.recognize(bgra, width, height) or "").split())
+        print(f"Monitor {monitor_index}: {size[0]}x{size[1]}")
+        print(f"Region: {region.left},{region.top},{region.width},{region.height}")
+        print(f"OCR text: {text!r}")
+        if text and translator is not None:
+            print(f"Translation: {translator.translate(text)}")
+        return
+
+    store = SubtitleStore()
+    engine = OcrCaptionEngine(
+        store,
+        region=region,
+        ocr=ocr,
+        translator=translator,
+        interval=interval,
+        source_language=source_language,
+        stable_frames=stable_frames,
+        hold_seconds=hold_seconds,
+        monitor_index=monitor_index,
+    )
+    engine.start()
+    server = make_server(store, host, port)
+    url = f"http://{host}:{port}/"
+    print(f"plextranslator screen-OCR subtitles running at {url}")
+    print(
+        f"Watching region {region.left},{region.top},{region.width},{region.height} "
+        f"on monitor {monitor_index} every {interval}s"
+    )
+    print("Keep the overlay window OUTSIDE that region. Ctrl-C to stop.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopping...")
+    finally:
+        engine.stop()
+        server.shutdown()
+        server.server_close()

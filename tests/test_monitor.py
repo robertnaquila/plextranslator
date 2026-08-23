@@ -1,8 +1,6 @@
-"""Tests for the capture audio-monitor passthrough plumbing.
+"""Tests for the capture stream plumbing (windowing, monitor tee, reader)."""
 
-The actual sounddevice playback can't run in CI (no audio hardware), so these
-exercise the stream-windowing / tee logic with fakes.
-"""
+import queue
 
 import pytest
 
@@ -29,16 +27,20 @@ class _FakeTranscriber:
 
 def _engine(store, transcriber, **kw):
     cfg = Config()
+    kw.setdefault("window_seconds", 0.02)  # 0.02s -> 640 bytes per window
+    kw.setdefault("overlap_seconds", 0.0)
     return AudioCaptureEngine(
         cfg,
         store,
         device="x",
         input_format="pulse",
-        window_seconds=kw.get("window_seconds", 0.02),  # 0.02s -> 640 bytes
-        overlap_seconds=kw.get("overlap_seconds", 0.0),
         transcriber=transcriber,
-        **{k: v for k, v in kw.items() if k not in {"window_seconds", "overlap_seconds"}},
+        **kw,
     )
+
+
+def _window_bytes(window_seconds=0.02):
+    return int(window_seconds * SAMPLE_RATE * BYTES_PER_SAMPLE)
 
 
 def test_process_stream_emits_caption_per_window():
@@ -48,36 +50,34 @@ def test_process_stream_emits_caption_per_window():
     t = _FakeTranscriber()
     engine = _engine(store, t)
 
-    window_bytes = int(0.02 * SAMPLE_RATE * BYTES_PER_SAMPLE)  # 640
-    # One full window of bytes, then end-of-stream.
-    chunks = [b"\x01\x00" * (window_bytes // 2), None]
-    it = iter(chunks)
-    engine._process_stream(lambda: next(it))
+    q = queue.Queue()
+    q.put(b"\x01\x00" * (_window_bytes() // 2))  # one full window
+    q.put(None)
+    engine._process_stream(q)
 
     assert t.calls == 1
     assert store.snapshot()["line"] == "line1"
 
 
-def test_process_stream_skips_empty_chunks_and_stops_on_none():
+def test_process_stream_assembles_window_from_partial_chunks():
     pytest.importorskip("numpy")
     store = SubtitleStore()
     store.start_live("t")
     t = _FakeTranscriber()
     engine = _engine(store, t)
 
-    window_bytes = int(0.02 * SAMPLE_RATE * BYTES_PER_SAMPLE)
-    half = b"\x01\x00" * (window_bytes // 4)
-    # empty chunk (skipped), two halves (=> one window), then EOF
-    chunks = [b"", half, half, None]
-    it = iter(chunks)
-    engine._process_stream(lambda: next(it))
+    half = b"\x01\x00" * (_window_bytes() // 4)
+    q = queue.Queue()
+    q.put(b"")  # empty chunk is harmless
+    q.put(half)
+    q.put(half)
+    q.put(None)
+    engine._process_stream(q)
 
     assert t.calls == 1
 
 
 def test_reader_tees_to_monitor_and_enqueues():
-    import queue
-
     store = SubtitleStore()
     engine = _engine(store, _FakeTranscriber())
 
@@ -90,26 +90,48 @@ def test_reader_tees_to_monitor_and_enqueues():
         def close(self):
             pass
 
-    class _FakeProc:
+    class _FakeStream:
         def __init__(self, chunks):
             self._chunks = iter(chunks)
 
-        class _Out:
-            def __init__(self, outer):
-                self._outer = outer
+        def read(self, n=None):
+            return next(self._chunks, b"")
 
-            def read(self, n):
-                return next(self._outer._chunks, b"")
+    class _FakeProc:
+        def __init__(self, chunks):
+            self.stdout = _FakeStream(chunks)
+            self.stderr = _FakeStream([])
 
-        @property
-        def stdout(self):
-            return _FakeProc._Out(self)
+        def poll(self):
+            return 0
 
     q = queue.Queue()
-    proc = _FakeProc([b"aa", b"bb"])
-    engine._reader(proc, q, _FakeMonitor())
+    engine._reader(_FakeProc([b"aa", b"bb"]), q, _FakeMonitor())
 
     # monitor saw both chunks; queue holds both + the None sentinel
     assert written == [b"aa", b"bb"]
-    drained = [q.get(), q.get(), q.get()]
-    assert drained == [b"aa", b"bb", None]
+    assert [q.get(), q.get(), q.get()] == [b"aa", b"bb", None]
+
+
+def test_reader_without_monitor_still_enqueues():
+    store = SubtitleStore()
+    engine = _engine(store, _FakeTranscriber())
+
+    class _FakeStream:
+        def __init__(self, chunks):
+            self._chunks = iter(chunks)
+
+        def read(self, n=None):
+            return next(self._chunks, b"")
+
+    class _FakeProc:
+        def __init__(self, chunks):
+            self.stdout = _FakeStream(chunks)
+            self.stderr = _FakeStream([])
+
+        def poll(self):
+            return 0
+
+    q = queue.Queue()
+    engine._reader(_FakeProc([b"cc"]), q, None)
+    assert [q.get(), q.get()] == [b"cc", None]

@@ -320,9 +320,12 @@ coordinates into `$Region` in `watch-korean-ocr.ps1` — a tight region around
 just the subtitle text is both faster and much more accurate than the
 `bottom`/`bottom:N` default.
 
-**Desktop shortcut**: run `scripts\create-desktop-shortcut.ps1` once (from
-PowerShell, in the repo folder) to add a "Korean OCR Subtitles" icon to your
-Desktop — double-click it any time instead of opening this folder.
+**Desktop shortcut**: double-click `scripts\create-desktop-shortcut.bat` once
+to add a "Korean OCR Subtitles" icon to your Desktop — double-click that icon
+any time instead of opening this folder. (If PowerShell's default execution
+policy blocks running `.ps1` files directly, this `.bat` sidesteps it; running
+`scripts\create-desktop-shortcut.ps1` from PowerShell works too once you allow
+scripts with e.g. `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.)
 
 > ⚠️ **Model reality check for audio capture on CPU**: `small` keeps up with
 > real time; `medium` is borderline; `large-v3` needs a GPU (with catch-up it

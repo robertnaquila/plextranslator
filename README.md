@@ -303,6 +303,15 @@ audio routing, and almost no CPU load**. Whisper/ffmpeg aren't involved at all.
   become phantom captions. Every confirmed line is translated **in order**
   (bounded backlog), so a burst of quick lines all reach the overlay instead
   of only the newest.
+- **Fixed graphics in the region** (a logo/watermark that OCRs as the same
+  text every time the subtitle clears) are learned and suppressed after they
+  repeat `--recurring-limit` times (default 3; the console says when this
+  kicks in), and you can pre-ban known ones with `--ignore-text "다"`
+  (repeatable). Cleanest fix is still a region that excludes the graphic.
+- **Garbled-line handling**: the translator is told the text comes from OCR
+  and to always produce a subtitle, and any response that is commentary about
+  the text ("unable to translate this passage"…) is suppressed instead of
+  shown, and never cached.
 - Translation uses Claude (`ANTHROPIC_API_KEY`); a fast model like Claude Haiku
   keeps per-line latency well under a second. Without a key it shows the
   original text untranslated.

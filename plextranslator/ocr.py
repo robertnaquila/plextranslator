@@ -150,6 +150,13 @@ class SubtitleTracker:
       characters need ``short_line_extra`` additional stable frames — real
       one-character subtitles ("네", "어?") stay up long enough to pass, while
       transient OCR flickers don't.
+    - **recurring-line suppression**: a fixed on-screen graphic inside the
+      region (a logo, watermark, or decorative caption element) OCRs as the
+      SAME text every time the real subtitle clears, re-emitting it endlessly.
+      After a text has been emitted ``recurring_limit`` times it is treated as
+      furniture: suppressed, and counted as an empty frame so the display
+      clears properly. ``ignore_texts`` pre-seeds that suppression for known
+      graphics; ``recurring_limit=0`` disables the learning.
     """
 
     def __init__(
@@ -161,6 +168,8 @@ class SubtitleTracker:
         script_ratio: float = 0.4,
         min_solid_chars: int = 2,
         short_line_extra: int = 2,
+        recurring_limit: int = 3,
+        ignore_texts=None,
     ) -> None:
         if stable_frames < 1:
             raise ValueError("stable_frames must be >= 1")
@@ -170,10 +179,38 @@ class SubtitleTracker:
         self.script_ratio = script_ratio
         self.min_solid_chars = min_solid_chars
         self.short_line_extra = short_line_extra
+        self.recurring_limit = recurring_limit
+        self._ignored = {" ".join(t.split()) for t in (ignore_texts or []) if t.strip()}
+        self._emit_counts: dict = {}
         self._current: Optional[str] = None
         self._pending: Optional[str] = None
         self._pending_count = 0
         self._empty_count = 0
+
+    def _is_suppressed(self, text: str) -> bool:
+        if text in self._ignored:
+            return True
+        return (
+            self.recurring_limit > 0
+            and self._emit_counts.get(text, 0) >= self.recurring_limit
+        )
+
+    def _record_emission(self, text: str) -> None:
+        if self.recurring_limit <= 0:
+            return
+        if len(self._emit_counts) > 500:  # unbounded-growth backstop
+            self._emit_counts.clear()
+        count = self._emit_counts.get(text, 0) + 1
+        self._emit_counts[text] = count
+        if count == self.recurring_limit:
+            logger.warning(
+                "%r has now appeared %d times - treating it as a fixed on-screen "
+                "graphic (logo/watermark inside the region) and suppressing it "
+                "from now on. If it's real dialogue, raise --recurring-limit or "
+                "redraw the region to exclude the graphic.",
+                text,
+                count,
+            )
 
     def _is_noise(self, text: str, script_chars: int) -> bool:
         if script_chars < 0:  # no registered script for this language
@@ -186,7 +223,7 @@ class SubtitleTracker:
     def feed(self, raw: Optional[str]) -> Optional[str]:
         text = " ".join((raw or "").split())
         script_chars = count_script_chars(text, self.source_language)
-        if text and self._is_noise(text, script_chars):
+        if text and (self._is_noise(text, script_chars) or self._is_suppressed(text)):
             text = ""
         if not text:
             self._pending = None
@@ -214,6 +251,7 @@ class SubtitleTracker:
             self._current = emitted
             self._pending = None
             self._pending_count = 0
+            self._record_emission(emitted)
             return emitted
         return None
 
@@ -287,12 +325,18 @@ class LlmTranslator:
         lang = _LANGUAGE_NAMES.get(self.source_language, self.source_language)
         return (
             f"You translate {lang} subtitle lines from a TV show into natural, "
-            "concise English subtitles. The lines arrive one at a time, in order. "
-            "Reply with ONLY the English translation of the latest line - no "
-            "quotes, no romanization, no notes."
+            "concise English subtitles. The lines come from OCR of on-screen "
+            f"text and may contain recognition errors - infer the most likely "
+            f"intended {lang} and translate that. The lines arrive one at a "
+            "time, in order. Reply with ONLY the English subtitle text - never "
+            "an apology, explanation, or comment about the text or its quality. "
+            "If a line is partly unintelligible, translate the intelligible "
+            "part; if fully unintelligible, give your best one-line guess."
         )
 
     def translate(self, text: str) -> str:
+        """Translate one line. Returns ``""`` when the model produced
+        commentary instead of a translation (callers should show nothing)."""
         client = self._ensure_client()
         messages = []
         for src, tgt in self._context:
@@ -310,9 +354,51 @@ class LlmTranslator:
         translated = next(
             (b.text for b in response.content if getattr(b, "text", None)), ""
         ).strip()
+        if translated and looks_like_meta_response(translated):
+            logger.info(
+                "Model returned commentary instead of a translation for %r; "
+                "suppressing it.", text
+            )
+            return ""
         if translated:
             self._context.append((text, translated))
         return translated or text
+
+
+# Phrases that mark a model response as commentary ABOUT the text rather than a
+# translation OF it. Deliberately narrow: real subtitle translations ("I'm
+# sorry.", "I can't do this!") must never match, so we key on translation-task
+# vocabulary that essentially never appears in dialogue.
+_META_MARKERS = (
+    "cannot translate",
+    "can't translate",
+    "unable to translate",
+    "confidently translate",
+    "difficult to translate",
+    "translate this",
+    "translation of this",
+    "not translatable",
+    "this passage",
+    "unintelligib",
+    "garbled",
+    "gibberish",
+    "ocr",
+    "korean word",
+    "korean text",
+    "japanese word",
+    "japanese text",
+    "not valid korean",
+    "not valid japanese",
+    "recognition error",
+    "something wrong with this",
+    "as an ai",
+)
+
+
+def looks_like_meta_response(response: str) -> bool:
+    """True if ``response`` reads as commentary about the input, not a subtitle."""
+    lowered = response.lower()
+    return any(marker in lowered for marker in _META_MARKERS)
 
 
 # -- screen capture --------------------------------------------------------
@@ -616,6 +702,8 @@ class OcrCaptionEngine(_StoppableThread):
         stable_frames: int = 2,
         hold_seconds: float = 45.0,
         monitor_index: int = 1,
+        recurring_limit: int = 3,
+        ignore_texts=None,
         grabber=None,
         title: str = "Live subtitles (screen OCR)",
     ) -> None:
@@ -629,7 +717,10 @@ class OcrCaptionEngine(_StoppableThread):
         self.monitor_index = monitor_index
         self.title = title
         self.tracker = SubtitleTracker(
-            source_language=source_language, stable_frames=stable_frames
+            source_language=source_language,
+            stable_frames=stable_frames,
+            recurring_limit=recurring_limit,
+            ignore_texts=ignore_texts,
         )
         self.cache = TranslationCache()
         self._grabber = grabber
@@ -645,6 +736,10 @@ class OcrCaptionEngine(_StoppableThread):
         seq, text = item
         try:
             translated = self.translator.translate(text)
+            if not translated:
+                # Commentary/meta response — show nothing (and cache nothing,
+                # so a later cleaner OCR of the same line gets a fresh chance).
+                return
             self.cache.put(text, translated)
         except Exception as exc:  # noqa: BLE001 - show the original over nothing
             logger.warning("Translation failed (%s); showing original text.", exc)
@@ -725,6 +820,8 @@ def run_ocr(
     tesseract_cmd: Optional[str] = None,
     psm: int = 6,
     save_frame_path: Optional[str] = None,
+    recurring_limit: int = 3,
+    ignore_texts=None,
 ) -> None:
     """Start screen-OCR subtitles + the web overlay server (or a one-shot probe)."""
     from .web import make_server
@@ -778,6 +875,8 @@ def run_ocr(
         stable_frames=stable_frames,
         hold_seconds=hold_seconds,
         monitor_index=monitor_index,
+        recurring_limit=recurring_limit,
+        ignore_texts=ignore_texts,
     )
     engine.start()
     server = make_server(store, host, port)

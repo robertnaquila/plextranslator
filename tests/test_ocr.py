@@ -496,3 +496,119 @@ def test_save_frame_writes_both_images(tmp_path, capsys):
     assert out.exists()
     assert (tmp_path / "frame.ocr.png").exists()
     assert "Saved raw frame" in capsys.readouterr().out
+
+
+# -- recurring-line (watermark) suppression --------------------------------
+
+
+def test_recurring_line_suppressed_after_limit():
+    # The real phantom: a fixed graphic inside the region OCRs as "다" every
+    # time the actual subtitle clears, re-emitting it between every real line.
+    tr = SubtitleTracker(
+        source_language="ko", stable_frames=1, short_line_extra=0,
+        recurring_limit=3, clear_frames=2,
+    )
+    emissions = []
+    for line in ("다", "실제 대사입니다", "다", "다른 대사예요", "다"):
+        result = tr.feed(line)
+        if result:
+            emissions.append(result)
+    assert emissions.count("다") == 3  # allowed up to the limit...
+    # ...but from now on it's furniture: suppressed AND counts toward clear.
+    assert tr.feed("마지막 대사") == "마지막 대사"
+    assert tr.feed("다") is None
+    assert tr.feed("다") == ""  # clears the display instead of re-captioning
+
+
+def test_ignore_texts_suppressed_immediately():
+    tr = SubtitleTracker(
+        source_language="ko", stable_frames=1, short_line_extra=0,
+        ignore_texts=["다"], clear_frames=2,
+    )
+    assert tr.feed("다") is None
+    assert tr.feed("진짜 대사") == "진짜 대사"
+    assert tr.feed("다") is None
+    assert tr.feed("다") == ""  # counts as empty -> clears
+
+
+def test_recurring_limit_zero_disables_learning():
+    tr = SubtitleTracker(
+        source_language="ko", stable_frames=1, short_line_extra=0,
+        recurring_limit=0,
+    )
+    for expected in range(10):
+        assert tr.feed("네네") == "네네"
+        assert tr.feed("다른 말") == "다른 말"
+
+
+# -- meta-response (commentary) suppression --------------------------------
+
+
+def test_meta_detector_catches_real_examples():
+    from plextranslator.ocr import looks_like_meta_response
+
+    # The two responses actually observed in the field:
+    assert looks_like_meta_response(
+        "I am unable to confidently translate this passage"
+    )
+    assert looks_like_meta_response(
+        "There seems to be something wrong with this Korean word"
+    )
+
+
+def test_meta_detector_spares_real_subtitles():
+    from plextranslator.ocr import looks_like_meta_response
+
+    for line in (
+        "I'm sorry.",
+        "I can't do this anymore!",
+        "Yes.",
+        "What are you talking about?",
+        "I was unable to sleep last night.",  # 'unable to' alone isn't meta
+    ):
+        assert not looks_like_meta_response(line), line
+
+
+def test_translator_suppresses_meta_and_keeps_context_clean():
+    class _MetaThenReal:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            reply = (
+                "I am unable to confidently translate this passage"
+                if len(self.calls) == 1
+                else "Real translation."
+            )
+            return SimpleNamespace(content=[SimpleNamespace(text=reply)])
+
+    fake = _MetaThenReal()
+    translator = LlmTranslator(
+        "key", "m", source_language="ko", client=SimpleNamespace(messages=fake)
+    )
+    assert translator.translate("갈비된 텍스트") == ""  # suppressed
+    assert translator.translate("진짜 대사") == "Real translation."
+    # The meta exchange must NOT have been replayed as context.
+    assert fake.calls[1]["messages"] == [{"role": "user", "content": "진짜 대사"}]
+
+
+def test_engine_skips_display_and_cache_on_meta_response():
+    class _MetaTranslator:
+        def translate(self, text):
+            return ""  # what LlmTranslator returns for meta responses
+
+    engine, store = _ocr_engine(["엉망인 텍스트라인"], _MetaTranslator())
+    engine.store.set_live_caption("previous caption", hold_seconds=30)
+    engine._step()
+    assert store.snapshot()["line"] == "previous caption"  # unchanged
+    assert engine.cache.get("엉망인 텍스트라인") is None  # not cached
+
+
+def test_hardened_prompt_mentions_ocr_errors():
+    client = _fake_client()
+    translator = LlmTranslator("key", "m", source_language="ko", client=client)
+    translator.translate("안녕하세요")
+    system = client.messages.calls[0]["system"]
+    assert "OCR" in system
+    assert "never" in system.lower()

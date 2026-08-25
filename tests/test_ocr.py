@@ -612,3 +612,34 @@ def test_hardened_prompt_mentions_ocr_errors():
     system = client.messages.calls[0]["system"]
     assert "OCR" in system
     assert "never" in system.lower()
+
+
+# -- two-line (stacked dialogue) subtitles ---------------------------------
+
+
+def test_tracker_joins_stacked_lines_into_one_caption():
+    # psm 6 returns two stacked dialogue lines separated by a newline; they
+    # must normalize into a single caption text, stable across frames.
+    tr = SubtitleTracker(source_language="ko", stable_frames=2)
+    stacked = "- 누나, 왜!\n- 안녕하세요"
+    assert tr.feed(stacked) is None
+    assert tr.feed(stacked) == "- 누나, 왜! - 안녕하세요"
+    # same content re-OCRed with different whitespace: not a new line
+    assert tr.feed("- 누나, 왜!  - 안녕하세요") is None
+
+
+def test_engine_displays_two_speaker_caption():
+    translator = _RecordingTranslator()
+    engine, store = _ocr_engine(["- 누나, 왜!\n- 안녕하세요"], translator)
+    engine._step()
+    assert translator.calls == ["- 누나, 왜! - 안녕하세요"]
+    assert store.snapshot()["line"] == "T:- 누나, 왜! - 안녕하세요"
+
+
+def test_prompt_explains_two_speaker_dash_format():
+    client = _fake_client()
+    translator = LlmTranslator("key", "m", source_language="ko", client=client)
+    translator.translate("안녕하세요")
+    system = client.messages.calls[0]["system"]
+    assert "TWO speakers" in system
+    assert '"- ... - ..."' in system

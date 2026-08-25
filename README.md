@@ -284,8 +284,11 @@ audio routing, and almost no CPU load**. Whisper/ffmpeg aren't involved at all.
   contrast is.
 - **If the probe returns gibberish**, the region is almost always too wide —
   the full-width default includes video imagery and UI that Tesseract tries to
-  read as text. Narrow it to just the subtitle band with `--select-region`.
-  On a tight single-line strip, `--psm 7` beats the default `--psm 6`.
+  read as text. Narrow it to just the subtitle band with `--select-region`,
+  and draw it **tall enough for two lines**: dialogue captions often stack two
+  speakers (`- 누나, 왜!` over `- 안녕하세요`), which are read together and
+  translated as one `- ... - ...` caption. Keep the default `--psm 6` for
+  that — `--psm 7` is single-line-only and mangles stacked dialogue.
 - **OCR engines** (`--ocr-backend`): `windows` uses the OCR built into
   Windows 10/11 (`pip install winsdk`, plus the language pack: Settings → Time &
   Language → Language & region → Add a language → 한국어); `tesseract` works

@@ -328,10 +328,13 @@ class LlmTranslator:
             "concise English subtitles. The lines come from OCR of on-screen "
             f"text and may contain recognition errors - infer the most likely "
             f"intended {lang} and translate that. The lines arrive one at a "
-            "time, in order. Reply with ONLY the English subtitle text - never "
-            "an apology, explanation, or comment about the text or its quality. "
-            "If a line is partly unintelligible, translate the intelligible "
-            "part; if fully unintelligible, give your best one-line guess."
+            "time, in order. Some captions hold TWO speakers' short lines, "
+            'each prefixed with "-" (e.g. "- 누나, 왜! - 안녕하세요"); translate '
+            'both and keep the same "- ... - ..." format. Reply with ONLY the '
+            "English subtitle text - never an apology, explanation, or comment "
+            "about the text or its quality. If a line is partly "
+            "unintelligible, translate the intelligible part; if fully "
+            "unintelligible, give your best one-line guess."
         )
 
     def translate(self, text: str) -> str:

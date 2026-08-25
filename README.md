@@ -291,9 +291,18 @@ audio routing, and almost no CPU load**. Whisper/ffmpeg aren't involved at all.
   Language → Language & region → Add a language → 한국어); `tesseract` works
   everywhere (`pip install pytesseract` + the Tesseract binary with e.g. `kor`
   data); `auto` (default) tries Windows first, then Tesseract.
-- **Latency knobs**: `--interval` (default 0.4 s between screen checks) and
-  `--stable-frames` (default 2 frames of debounce; `1` is fastest but may
-  flicker on OCR misreads). Repeated lines are cached and translate instantly.
+- **Latency knobs**: `--interval` (default 0.2 s between screen checks — at
+  0.2 s a line only needs to survive ~0.6 s to be confirmed, so fast dialogue
+  isn't missed) and `--stable-frames` (default 2 frames of debounce; `1` is
+  fastest but may flicker on OCR misreads). Repeated lines are cached and
+  translate instantly.
+- **Noise filtering**: text where too few characters are in the source
+  language's script (video imagery misread as a stray glyph) is treated as an
+  empty frame, and one-character lines need a few extra stable frames — real
+  short subtitles ("네", "어?") still show, transient OCR flickers don't
+  become phantom captions. Every confirmed line is translated **in order**
+  (bounded backlog), so a burst of quick lines all reach the overlay instead
+  of only the newest.
 - Translation uses Claude (`ANTHROPIC_API_KEY`); a fast model like Claude Haiku
   keeps per-line latency well under a second. Without a key it shows the
   original text untranslated.

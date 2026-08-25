@@ -112,9 +112,47 @@ def test_tracker_filters_non_source_script():
 
 def test_tracker_line_can_reappear_after_another():
     tr = SubtitleTracker(source_language="ko", stable_frames=1)
-    assert tr.feed("가") == "가"
-    assert tr.feed("나") == "나"
-    assert tr.feed("가") == "가"  # not suppressed: current was "나"
+    assert tr.feed("가나") == "가나"
+    assert tr.feed("나다") == "나다"
+    assert tr.feed("가나") == "가나"  # not suppressed: current was "나다"
+
+
+def test_tracker_short_line_needs_extra_stability():
+    # A single-character line ("네") is a REAL Korean subtitle, but transient
+    # single-glyph OCR noise looks identical for a frame or two — so short
+    # lines need stable_frames + short_line_extra consecutive frames.
+    tr = SubtitleTracker(source_language="ko", stable_frames=1, short_line_extra=2)
+    assert tr.feed("네") is None
+    assert tr.feed("네") is None
+    assert tr.feed("네") == "네"  # 1 + 2 frames -> emitted
+
+
+def test_tracker_transient_single_glyph_never_emits():
+    # The phantom-caption bug: one noise glyph appears for a frame or two,
+    # then the region is empty again. It must not become a caption.
+    tr = SubtitleTracker(source_language="ko", stable_frames=1, short_line_extra=2)
+    assert tr.feed("이") is None
+    assert tr.feed("이") is None
+    assert tr.feed("") is None
+    assert tr.feed("어") is None
+    assert tr.feed("") is None
+
+
+def test_tracker_low_script_ratio_is_noise():
+    # The user's real probe output on a too-wide region: mostly digits and
+    # punctuation with a couple of Hangul glyphs. Must be treated as noise —
+    # and count toward the clear streak.
+    tr = SubtitleTracker(source_language="ko", stable_frames=1, clear_frames=2)
+    assert tr.feed("주고받는 대화입니다") == "주고받는 대화입니다"
+    junk = "※ 1] 고 | 00016066 이 여기고 | 기 그 0 0"
+    assert tr.feed(junk) is None
+    assert tr.feed(junk) == ""  # second noise frame clears the display
+
+
+def test_tracker_punctuated_real_line_survives_ratio():
+    # Real subtitles carry punctuation; the ratio gate must not eat them.
+    tr = SubtitleTracker(source_language="ko", stable_frames=1)
+    assert tr.feed("- 왜, 뭐가? - 언니 여신이에요, 오늘") == "- 왜, 뭐가? - 언니 여신이에요, 오늘"
 
 
 def test_tracker_normalizes_whitespace():
@@ -304,9 +342,50 @@ def test_engine_survives_ocr_errors():
 
 def test_stale_translation_not_displayed():
     engine, store = _ocr_engine([], _RecordingTranslator())
-    engine._seq = 7
-    engine._translate_apply((3, "옛날 대사"))  # stale seq
+    engine._displayed_seq = 7  # something newer is already on screen
+    engine._translate_apply((3, "옛날 대사"))
     assert store.snapshot()["line"] != "T:옛날 대사"
+    engine._translate_apply((8, "새로운 대사"))  # newer than displayed -> shows
+    assert store.snapshot()["line"] == "T:새로운 대사"
+
+
+def test_engine_fast_burst_shows_every_line_in_order():
+    # The fast-dialogue bug: lines logged in the terminal but never captioned,
+    # because a latest-only worker dropped intermediates and discarded the
+    # in-flight line. With the FIFO worker every emitted line is translated
+    # and displayed, in order.
+    translator = _RecordingTranslator()
+    engine, store = _ocr_engine(["하나입니다", "둘입니다", "셋입니다"], translator)
+    engine._step()
+    engine._step()
+    engine._step()
+    assert translator.calls == ["하나입니다", "둘입니다", "셋입니다"]
+    assert store.snapshot()["line"] == "T:셋입니다"
+
+
+def test_clear_supersedes_in_flight_translation():
+    # Subtitle vanished (clear shown) while its translation was still at
+    # Claude; the late completion must not resurrect it over the blank.
+    engine, store = _ocr_engine([], _RecordingTranslator())
+    engine._seq = 4
+    engine._displayed_seq = 4  # a clear event at seq 4 blanked the display
+    engine.store.set_live_caption("", hold_seconds=1.0)
+    engine._translate_apply((3, "사라진 대사"))
+    assert store.snapshot()["line"] == ""
+
+
+def test_engine_uses_ordered_worker_by_default():
+    from plextranslator.workers import OrderedWorker
+
+    store = SubtitleStore()
+    engine = OcrCaptionEngine(
+        store,
+        region=Region(0, 0, 10, 10),
+        ocr=_ScriptedOcr([]),
+        translator=_RecordingTranslator(),
+        grabber=_FakeGrabber(),
+    )
+    assert isinstance(engine._worker, OrderedWorker)
 
 
 def test_run_ocr_probe_smoke(monkeypatch, capsys):

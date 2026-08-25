@@ -43,7 +43,7 @@ from typing import List, Optional, Tuple
 
 from .config import Config
 from .web import SubtitleStore, _StoppableThread
-from .workers import LatestOnlyWorker
+from .workers import OrderedWorker
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,17 @@ _SCRIPT_RANGES = {
 }
 
 
+def count_script_chars(text: str, language: Optional[str]) -> int:
+    """Number of characters in ``text`` belonging to ``language``'s script.
+
+    Returns -1 for languages without a registered script range (no filtering).
+    """
+    ranges = _SCRIPT_RANGES.get((language or "").lower())
+    if not ranges:
+        return -1
+    return sum(1 for ch in text if any(lo <= ord(ch) <= hi for lo, hi in ranges))
+
+
 def matches_script(text: str, language: Optional[str]) -> bool:
     """True if ``text`` contains at least one character of ``language``'s script.
 
@@ -116,10 +127,7 @@ def matches_script(text: str, language: Optional[str]) -> bool:
     caption overlay itself if it strays into the watched region. Languages
     without a registered script range accept anything.
     """
-    ranges = _SCRIPT_RANGES.get((language or "").lower())
-    if not ranges:
-        return True
-    return any(lo <= ord(ch) <= hi for ch in text for lo, hi in ranges)
+    return count_script_chars(text, language) != 0
 
 
 class SubtitleTracker:
@@ -132,8 +140,16 @@ class SubtitleTracker:
       so the display should clear
 
     Debouncing by requiring the same text for ``stable_frames`` consecutive
-    frames absorbs single-frame OCR misreads; the script filter drops text with
-    none of the source language's characters (UI noise, the overlay itself).
+    frames absorbs single-frame OCR misreads. Two noise gates keep video
+    imagery from becoming phantom captions:
+
+    - **script ratio**: text where fewer than ``script_ratio`` of the
+      non-space characters are in the source language's script (e.g. random
+      punctuation/digits with one Hangul-looking glyph) is treated as noise;
+    - **short-line caution**: lines with fewer than ``min_solid_chars`` script
+      characters need ``short_line_extra`` additional stable frames — real
+      one-character subtitles ("네", "어?") stay up long enough to pass, while
+      transient OCR flickers don't.
     """
 
     def __init__(
@@ -142,20 +158,35 @@ class SubtitleTracker:
         source_language: Optional[str] = None,
         stable_frames: int = 2,
         clear_frames: int = 4,
+        script_ratio: float = 0.4,
+        min_solid_chars: int = 2,
+        short_line_extra: int = 2,
     ) -> None:
         if stable_frames < 1:
             raise ValueError("stable_frames must be >= 1")
         self.source_language = source_language
         self.stable_frames = stable_frames
         self.clear_frames = clear_frames
+        self.script_ratio = script_ratio
+        self.min_solid_chars = min_solid_chars
+        self.short_line_extra = short_line_extra
         self._current: Optional[str] = None
         self._pending: Optional[str] = None
         self._pending_count = 0
         self._empty_count = 0
 
+    def _is_noise(self, text: str, script_chars: int) -> bool:
+        if script_chars < 0:  # no registered script for this language
+            return False
+        if script_chars == 0:
+            return True
+        non_space = len(text.replace(" ", ""))
+        return bool(non_space) and (script_chars / non_space) < self.script_ratio
+
     def feed(self, raw: Optional[str]) -> Optional[str]:
         text = " ".join((raw or "").split())
-        if text and not matches_script(text, self.source_language):
+        script_chars = count_script_chars(text, self.source_language)
+        if text and self._is_noise(text, script_chars):
             text = ""
         if not text:
             self._pending = None
@@ -175,7 +206,10 @@ class SubtitleTracker:
         else:
             self._pending = text
             self._pending_count = 1
-        if self._pending_count >= self.stable_frames:
+        required = self.stable_frames
+        if 0 <= script_chars < self.min_solid_chars:
+            required += self.short_line_extra
+        if self._pending_count >= required:
             emitted = self._pending
             self._current = emitted
             self._pending = None
@@ -577,7 +611,7 @@ class OcrCaptionEngine(_StoppableThread):
         region: Region,
         ocr,
         translator: Optional[LlmTranslator],
-        interval: float = 0.4,
+        interval: float = 0.2,
         source_language: str = "ko",
         stable_frames: int = 2,
         hold_seconds: float = 45.0,
@@ -600,7 +634,12 @@ class OcrCaptionEngine(_StoppableThread):
         self.cache = TranslationCache()
         self._grabber = grabber
         self._seq = 0
-        self._worker = LatestOnlyWorker(self._translate_apply, name="plextranslator-translate")
+        # Highest emission seq currently reflected on screen. A finished
+        # translation only displays if it's newer — so a slow translation can't
+        # overwrite a caption (or a clear) that superseded it, while every line
+        # in a fast burst still shows in order (the worker is FIFO).
+        self._displayed_seq = 0
+        self._worker = OrderedWorker(self._translate_apply, name="plextranslator-translate")
 
     def _translate_apply(self, item) -> None:
         seq, text = item
@@ -610,7 +649,8 @@ class OcrCaptionEngine(_StoppableThread):
         except Exception as exc:  # noqa: BLE001 - show the original over nothing
             logger.warning("Translation failed (%s); showing original text.", exc)
             translated = text
-        if seq == self._seq:
+        if seq > self._displayed_seq:
+            self._displayed_seq = seq
             self.store.set_live_caption(translated, hold_seconds=self.hold_seconds)
 
     def _step(self) -> None:
@@ -627,13 +667,16 @@ class OcrCaptionEngine(_StoppableThread):
             return
         self._seq += 1
         if event == "":
+            self._displayed_seq = self._seq
             self.store.set_live_caption("", hold_seconds=1.0)
             return
         logger.info("Subtitle: %s", event)
         cached = self.cache.get(event)
         if cached is not None:
+            self._displayed_seq = self._seq
             self.store.set_live_caption(cached, hold_seconds=self.hold_seconds)
         elif self.translator is None:
+            self._displayed_seq = self._seq
             self.store.set_live_caption(event, hold_seconds=self.hold_seconds)
         else:
             self._worker.submit((self._seq, event))
@@ -672,7 +715,7 @@ def run_ocr(
     host: str = "127.0.0.1",
     port: int = 8765,
     region_spec: str = "bottom",
-    interval: float = 0.4,
+    interval: float = 0.2,
     backend: str = "auto",
     source_language: str = "ko",
     monitor_index: int = 1,

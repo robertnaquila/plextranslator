@@ -37,9 +37,13 @@ $Lang           = "ko"                       # language of the burned-in subs
 # time this script runs, before anything is cached. After that, the region
 # prompt below (and its saved cache) takes over.
 $Region         = "7,837,947,186"
-$Interval       = 0.4                        # seconds between screen checks
+$Interval       = 0.2                        # seconds between screen checks —
+                                             # 0.2 catches fast subtitles that
+                                             # 0.4 confirmed too late
 $StableFrames   = 3                          # frames a line must persist (fewer
-                                             # transition-frame misreads than 2)
+                                             # transition-frame misreads than 2;
+                                             # at 0.2s interval this is a 0.6s
+                                             # debounce, half what it was at 0.4)
 # Claude Haiku is fast, cheap, and plenty for subtitle lines — snappier captions.
 # For maximum translation quality use "claude-opus-4-8" (a beat slower per line).
 $AnthropicModel = "claude-haiku-4-5-20251001"

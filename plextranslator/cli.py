@@ -177,8 +177,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Drag-select the region on screen instead of typing coordinates.",
     )
     p_ocr.add_argument(
-        "--interval", type=float, default=0.4,
-        help="Seconds between screen checks (default 0.4).",
+        "--interval", type=float, default=0.2,
+        help="Seconds between screen checks (default 0.2; lower = catches "
+        "fast subtitles sooner, slightly more CPU).",
     )
     p_ocr.add_argument(
         "--ocr-backend", dest="ocr_backend",

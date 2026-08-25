@@ -223,6 +223,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Claude model used for translation.",
     )
     p_ocr.add_argument(
+        "--recurring-limit", dest="recurring_limit", type=int, default=3,
+        help="Suppress a line after it has appeared this many times — a fixed "
+        "logo/watermark inside the region keeps re-reading as the same text "
+        "(default 3; 0 = never suppress).",
+    )
+    p_ocr.add_argument(
+        "--ignore-text", dest="ignore_text", action="append", metavar="TEXT",
+        help="Never caption this exact text (repeatable) — for known on-screen "
+        "graphics inside the region.",
+    )
+    p_ocr.add_argument(
         "--region-cache", dest="region_cache", metavar="PATH",
         help="Write the resolved region (typed or --select-region-picked) to "
         "this file after startup, so a wrapper script can offer it as the "
@@ -432,6 +443,8 @@ def _cmd_ocr(config: Config, args: argparse.Namespace) -> int:
             tesseract_cmd=args.tesseract_cmd,
             psm=args.psm,
             save_frame_path=args.save_frame,
+            recurring_limit=args.recurring_limit,
+            ignore_texts=args.ignore_text,
         )
     except KeyboardInterrupt:
         pass

@@ -26,6 +26,8 @@ def _base_args(**overrides):
         save_frame=None,
         anthropic_model=None,
         region_cache=None,
+        recurring_limit=3,
+        ignore_text=None,
     )
     defaults.update(overrides)
     return argparse.Namespace(**defaults)

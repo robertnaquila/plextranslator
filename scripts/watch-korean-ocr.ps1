@@ -45,7 +45,10 @@ $StableFrames   = 3                          # frames a line must persist (fewer
                                              # at 0.2s interval this is a 0.6s
                                              # debounce, half what it was at 0.4)
 # Claude Haiku is fast, cheap, and plenty for subtitle lines — snappier captions.
-# For maximum translation quality use "claude-opus-4-8" (a beat slower per line).
+# If translations feel off (especially on garbled OCR lines), step up to
+# "claude-sonnet-5" — noticeably better at inferring what a misread Korean
+# line was meant to say, ~0.5-1s slower per line. "claude-opus-4-8" is the
+# max-quality (and slowest) option.
 $AnthropicModel = "claude-haiku-4-5-20251001"
 $Port           = 8765
 # OCR engine: "auto" (Windows built-in, else Tesseract), "windows", "tesseract".

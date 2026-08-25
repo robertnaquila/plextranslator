@@ -53,9 +53,11 @@ $AnthropicModel = "claude-haiku-4-5-20251001"
 $Port           = 8765
 # OCR engine: "auto" (Windows built-in, else Tesseract), "windows", "tesseract".
 $OcrBackend     = "tesseract"
-# Tesseract page-segmentation mode: 7 = single line, best for a tight strip
-# like $Region above. Use 6 ("block") if you widen the region to 2+ lines.
-$Psm            = 7
+# Tesseract page-segmentation mode: 6 = "uniform block", which reads one OR
+# two stacked subtitle lines (two-speaker dialogue like "- 누나, 왜!" over
+# "- 안녕하세요"). Only use 7 ("single line") if your region is strictly one
+# line tall — it mangles stacked lines. Draw the region tall enough for two.
+$Psm            = 6
 # Only needed for Tesseract when it isn't on PATH (the Windows installer doesn't
 # add it). Leave "" to auto-detect the usual install locations.
 $TesseractCmd   = ""

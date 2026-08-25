@@ -210,8 +210,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ocr.add_argument(
         "--psm", type=int, default=6,
-        help="Tesseract page-segmentation mode: 6 = block (default), "
-        "7 = single line (best for a tight subtitle strip), 11 = sparse text.",
+        help="Tesseract page-segmentation mode: 6 = block (default; reads one "
+        "or two stacked subtitle lines), 7 = single line only (mangles "
+        "two-line dialogue), 11 = sparse text.",
     )
     p_ocr.add_argument(
         "--save-frame", dest="save_frame", metavar="PATH",
